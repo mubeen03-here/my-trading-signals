@@ -168,15 +168,15 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     quality = round(max(0, 100 - (avg_dist * 4)), 1)
     return {"sequence": sequence, "match_quality": quality}
 
-# ==================== DIRECT MULTI-API ROUTING ====================
+# ==================== MULTI-API AI ROUTING ====================
 
 def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
-    prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict the NEXT immediate candle (Green/Red) and give a 1-sentence reason."
+    prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict NEXT immediate candle (Green/Red) with a 1-sentence reason."
     
     try:
         if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
             g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=st.secrets["GEMINI_API_KEY"])
-            res = g_client.chat.completions.create(model="gemini-1.5-flash", messages=[{"role": "user", "content": prompt}], timeout=10)
+            res = g_client.chat.completions.create(model="gemini-2.0-flash", messages=[{"role": "user", "content": prompt}], timeout=10)
             return True, res.choices[0].message.content.strip()
             
         elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):
@@ -206,35 +206,41 @@ def analyze_chart_vision_direct(image, symbol, tf):
     
     prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
 
-    # 1. Primary: Direct Gemini Official API
+    # 1. Primary: Direct Google Official Gemini API
     gemini_key = st.secrets.get("GEMINI_API_KEY")
     if gemini_key:
         try:
             g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key)
             res = g_client.chat.completions.create(
-                model="gemini-1.5-flash",
+                model="gemini-2.0-flash",
                 messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
                 timeout=12
             )
-            return "⚡ **Direct Official Gemini API Result:**\n\n" + res.choices[0].message.content.strip()
+            return "⚡ **Direct Gemini API Result:**\n\n" + res.choices[0].message.content.strip()
         except Exception:
             pass
 
-    # 2. Fallback: OpenRouter Vision
+    # 2. Fallback: OpenRouter Working Vision Endpoints
     or_key = st.secrets.get("OPENROUTER_API_KEY")
     if or_key:
-        try:
-            or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
-            res = or_client.chat.completions.create(
-                model="google/gemini-flash-1.5",
-                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
-                timeout=15
-            )
-            return "🌐 **OpenRouter Vision Fallback Result:**\n\n" + res.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Error: {str(e)}"
+        or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
+        vision_models = [
+            "google/gemini-2.0-flash-001",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "qwen/qwen-2-vl-7b-instruct:free"
+        ]
+        for model_name in vision_models:
+            try:
+                res = or_client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
+                    timeout=15
+                )
+                return f"🌐 **OpenRouter Vision ({model_name.split('/')[-1]}):**\n\n" + res.choices[0].message.content.strip()
+            except Exception:
+                continue
 
-    return "⚠️ Please add GEMINI_API_KEY in Secrets for direct instant chart analysis."
+    return "❌ Vision endpoints are currently busy. Please try again in a few seconds."
 
 # ==================== STREAMLIT UI ====================
 
@@ -293,7 +299,7 @@ if q_res:
     c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
     c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
     
-    # RESTORED CENTER MARKET STRUCTURE STATUS BOX
+    # CENTER MARKET STRUCTURE STATUS BOX
     ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
     st.markdown(f"""
     <div class="quant-box {ent_class}">
@@ -314,7 +320,7 @@ if q_res:
 
     st.divider()
     
-    # DEDICATED SEPARATE SECTION FOR MULTI-AI MODELS
+    # SEPARATE DEDICATED SECTION FOR AI MODELS
     st.subheader("🤖 Dedicated AI Next-Candle Predictor Engine")
     st.caption("Select an AI model below to generate its specific next-candle forecast.")
     
@@ -346,6 +352,6 @@ if q_res:
         img = Image.open(up_file)
         st.image(img, use_container_width=True)
         if st.button("Predict Next Candle via Vision AI"):
-            with st.spinner("Analyzing chart image via Direct Gemini API..."):
+            with st.spinner("Analyzing chart image..."):
                 st.info(analyze_chart_vision_direct(img, sel, tf))
-                                 
+        

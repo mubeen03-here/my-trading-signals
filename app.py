@@ -9,7 +9,7 @@ from PIL import Image
 import base64
 import io
 
-# ==================== MULTI-KEY & FAST AI ROUTING ====================
+# ==================== OPENROUTER API SETUP ====================
 OPENROUTER_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
 
 if OPENROUTER_KEY:
@@ -21,7 +21,7 @@ else:
     st.error("⚠️ OPENROUTER_API_KEY is missing in Streamlit Secrets! Please add it.")
     st.stop()
 
-# Page Setup
+# Streamlit Page Setup
 st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -145,13 +145,11 @@ def calculate_quant_signals(df):
         "entropy": entropy_score, "is_noisy": is_noisy, "mc_bull_prob": monte_carlo_bull_prob
     }
 
-# STABILIZED DTW SEQUENCE PREDICTOR (Top 3 Historical Consensus)
 def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     if df is None or len(df) < 200: return None
     close = df['Close'].astype(float).values
     open_p = df['Open'].astype(float).values
     
-    # Use closed candles to stabilize pattern
     curr = (close[-pattern_len-1:-1] - open_p[-pattern_len-1:-1])
     curr_norm = (curr - np.mean(curr)) / (np.std(curr) + 1e-8)
     
@@ -165,8 +163,6 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
         matches.append((dist, idx))
         
     if not matches: return None
-    
-    # Sort and take Top 3 closest patterns
     matches.sort(key=lambda x: x[0])
     top_3 = matches[:3]
     
@@ -181,79 +177,71 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
         
     avg_dist = np.mean([m[0] for m in top_3])
     quality = round(max(0, 100 - (avg_dist * 4)), 1)
-    
     return {"sequence": sequence, "match_quality": quality}
 
-# ==================== ULTRA-FAST MULTI-MODEL ROUTER ====================
+# ==================== AI INDIVIDUAL MODEL CALLS ====================
 
-def get_openrouter_text_analysis(symbol, tf, signal, metrics):
-    prompt = f"Symbol: {symbol}, Timeframe: {tf}, Signal: {signal}, Metrics: {metrics}. Provide 4 ultra-concise bullet points: Bias, Entry Zone, Target, and Next Candle Expectation."
-    
-    # High-speed models list
-    fast_models = [
-        "google/gemini-2.0-flash-exp:free",
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "qwen/qwen-2.5-72b-instruct:free",
-        "deepseek/deepseek-r1:free"
+def get_single_ai_analysis(model_id, symbol, tf, signal, metrics):
+    prompt = f"Symbol: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Give ONLY 2 short lines: 1) Action (Buy/Sell/Wait) 2) Key reason why."
+    try:
+        response = ai_client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=10
+        )
+        return True, response.choices[0].message.content.strip()
+    except Exception as e:
+        return False, f"⚠️ Model Busy or Offline ({str(e)[:40]}...)"
+
+def analyze_chart_with_openrouter_vision(image, symbol, tf):
+    vision_models = [
+        "google/gemini-2.0-flash-001",
+        "meta-llama/llama-3.2-11b-vision-instruct:free",
+        "google/gemini-flash-1.5"
     ]
     
-    for model_name in fast_models:
+    buffered = io.BytesIO()
+    image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    
+    prompt = f"Analyze chart for {symbol} ({tf}). Predict next candle direction (Bullish/Bearish) and give a 2-line reason."
+
+    for model_name in vision_models:
         try:
             response = ai_client.chat.completions.create(
                 model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                timeout=12
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}
+                        ]
+                    }
+                ],
+                timeout=15
             )
-            return response.choices[0].message.content.strip()
+            return f"✅ **Model Used ({model_name.split('/')[1]}):**\n\n" + response.choices[0].message.content.strip()
         except Exception:
             continue
             
-    return "⚡ Response took too long. Click button again for instant retry."
-
-def analyze_chart_with_openrouter_vision(image, symbol, tf):
-    try:
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        img_str = base64.b64encode(buffered.getvalue()).decode()
-
-        prompt = f"Analyze this chart screenshot for {symbol} ({tf}). Predict the NEXT immediate candle direction (Bullish Green / Bearish Red) with clear price action reason."
-
-        response = ai_client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp:free",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{img_str}"}
-                        }
-                    ]
-                }
-            ],
-            timeout=18
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Vision AI Error: {str(e)}"
+    return "❌ All Vision AI endpoints are currently busy. Try again in a few seconds."
 
 # ==================== STREAMLIT UI ====================
 
-# Top Header
 head_col, btn_col = st.columns([3, 1])
 with head_col:
     st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine</h1>', unsafe_allow_html=True)
     st.caption(f"PKT: {get_pakistan_time()} | Active Focus: {st.session_state.selected_symbol}")
 with btn_col:
     st.write("")
-    if st.button("🔄 Refresh Market Data", use_container_width=True):
+    if st.button("🔄 Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 st.divider()
 
-# Pair Cards Top Bar
+# Pair Selection Cards
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
     with cols[idx % 3]:
@@ -283,7 +271,7 @@ sel = st.session_state.selected_symbol
 meta = MAIN_SYMBOLS[sel]
 
 st.divider()
-st.subheader(f"🧠 Next Candle & Market Structure Deep Dive: {sel}")
+st.subheader(f"🧠 Next Candle & Market Structure: {sel}")
 
 tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
 df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
@@ -293,40 +281,49 @@ if q_res:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Live Price", f"{q_res['price']:,}")
     c2.metric("Quantum Signal", q_res['signal'])
-    c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
-    c4.metric("Monte Carlo Next Candle Bull Prob.", f"{q_res['mc_bull_prob']}%")
+    c3.metric("Entropy Noise", f"{q_res['entropy']} / 1.0")
+    c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
     
-    ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
-    st.markdown(f"""
-    <div class="quant-box {ent_class}">
-        <h4>🔬 Shannon Market Chaos Check:</h4>
-        <p>Market Noise Level: <b>{q_res['entropy']}</b>. {'⚠️ High Chaos/Squeeze: Wait for breakout before taking next candle trades.' if q_res['is_noisy'] else '✅ Clean Market Trend: High probability setup for next candle prediction.'}</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("### 🌀 DTW 6-Candle Pattern Forecast (Stabilized Consensus)")
+    st.markdown("---")
+    st.markdown("### 🌀 DTW 6-Candle Pattern Forecast")
     seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
     if seq:
-        st.write(f"Historical Top 3 Shape Consensus Quality: **{seq['match_quality']}%**")
+        st.write(f"Pattern Quality: **{seq['match_quality']}%**")
         scols = st.columns(len(seq['sequence']))
         for i, step in enumerate(seq['sequence']):
             with scols[i]:
                 st.markdown(f"**Candle +{i+1}**\n\n{step}")
                 
     st.markdown("---")
-    st.markdown("### 🤖 Fast Tactical AI Analysis")
-    if st.button("Generate Immediate Execution Plan"):
-        metrics = f"Entropy: {q_res['entropy']}, Bull Prob: {q_res['mc_bull_prob']}%"
-        with st.spinner("Analyzing Next Candle via AI..."):
-            st.info(get_openrouter_text_analysis(sel, tf, q_res['signal'], metrics))
-        
+    st.markdown("### 🤖 OpenRouter AI Model Signals (Individual Dropdowns)")
+    
+    metrics = f"Entropy: {q_res['entropy']}, Bull Prob: {q_res['mc_bull_prob']}%"
+    
+    # Define individual AI models with individual expander arrows
+    ai_models = {
+        "Gemini 2.0 Flash": "google/gemini-2.0-flash-exp:free",
+        "Meta Llama 3.3 (70B)": "meta-llama/llama-3.3-70b-instruct:free",
+        "DeepSeek R1": "deepseek/deepseek-r1:free",
+        "Qwen 2.5 (72B)": "qwen/qwen-2.5-72b-instruct:free"
+    }
+    
+    for name, model_id in ai_models.items():
+        with st.expander(f"▼ {name} Signal"):
+            if st.button(f"Get {name} Signal", key=f"btn_{name}"):
+                with st.spinner(f"Fetching from {name}..."):
+                    success, res = get_single_ai_analysis(model_id, sel, tf, q_res['signal'], metrics)
+                    if success:
+                        st.success(f"🟢 **Active**\n\n{res}")
+                    else:
+                        st.warning(f"⚠️ **Busy** - {res}")
+
     st.markdown("---")
-    st.markdown("### 📸 Gemini AI Chart Screenshot Analysis")
+    st.markdown("### 📸 Gemini AI Vision Chart Analysis")
     up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
     if up_file:
         img = Image.open(up_file)
         st.image(img, use_container_width=True)
-        if st.button("Predict Next Candle via Gemini Vision"):
-            with st.spinner("Analyzing chart image for Next Candle Direction..."):
-                st.success(analyze_chart_with_openrouter_vision(img, sel, tf))
+        if st.button("Predict Next Candle via Vision AI"):
+            with st.spinner("Analyzing chart image..."):
+                st.info(analyze_chart_with_openrouter_vision(img, sel, tf))
     

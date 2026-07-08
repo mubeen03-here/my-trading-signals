@@ -9,19 +9,7 @@ from PIL import Image
 import base64
 import io
 
-# ==================== OPENROUTER API SETUP ====================
-OPENROUTER_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
-
-if OPENROUTER_KEY:
-    ai_client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_KEY,
-    )
-else:
-    st.error("⚠️ OPENROUTER_API_KEY is missing in Streamlit Secrets! Please add it.")
-    st.stop()
-
-# Streamlit Page Setup
+# Page Setup
 st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -37,11 +25,12 @@ st.markdown("""
     .sell { background-color: #c62828; color: white; }
     .strong-sell { background-color: #d32f2f; color: white; }
     .quant-box { background-color: #131924; border: 1px solid #1f6feb; border-radius: 12px; padding: 1.2rem; margin: 1rem 0; }
-    .entropy-high { border-left: 5px solid #f44336; }
-    .entropy-low { border-left: 5px solid #00c853; }
+    .entropy-high { border-left: 6px solid #f44336; }
+    .entropy-low { border-left: 6px solid #00c853; }
 </style>
 """, unsafe_allow_html=True)
 
+# Main Supported Assets
 MAIN_SYMBOLS = {
     "Bitcoin (BTC)": {"yf_ticker": "BTC-USD", "display": "BTC/USD"},
     "USD/JPY": {"yf_ticker": "USDJPY=X", "display": "USD/JPY"},
@@ -179,53 +168,73 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     quality = round(max(0, 100 - (avg_dist * 4)), 1)
     return {"sequence": sequence, "match_quality": quality}
 
-# ==================== AI INDIVIDUAL MODEL CALLS ====================
+# ==================== DIRECT MULTI-API ROUTING ====================
 
-def get_single_ai_analysis(model_id, symbol, tf, signal, metrics):
-    prompt = f"Symbol: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Give ONLY 2 short lines: 1) Action (Buy/Sell/Wait) 2) Key reason why."
-    try:
-        response = ai_client.chat.completions.create(
-            model=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=10
-        )
-        return True, response.choices[0].message.content.strip()
-    except Exception as e:
-        return False, f"⚠️ Model Busy or Offline ({str(e)[:40]}...)"
-
-def analyze_chart_with_openrouter_vision(image, symbol, tf):
-    vision_models = [
-        "google/gemini-2.0-flash-001",
-        "meta-llama/llama-3.2-11b-vision-instruct:free",
-        "google/gemini-flash-1.5"
-    ]
+def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
+    prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict the NEXT immediate candle (Green/Red) and give a 1-sentence reason."
     
+    try:
+        if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
+            g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=st.secrets["GEMINI_API_KEY"])
+            res = g_client.chat.completions.create(model="gemini-1.5-flash", messages=[{"role": "user", "content": prompt}], timeout=10)
+            return True, res.choices[0].message.content.strip()
+            
+        elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):
+            groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=st.secrets["GROQ_API_KEY"])
+            res = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], timeout=8)
+            return True, res.choices[0].message.content.strip()
+            
+        elif st.secrets.get("OPENROUTER_API_KEY"):
+            or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=st.secrets["OPENROUTER_API_KEY"])
+            model_map = {
+                "Llama 3.3 (OpenRouter)": "meta-llama/llama-3.3-70b-instruct:free",
+                "DeepSeek R1 (OpenRouter)": "deepseek/deepseek-r1:free",
+                "Qwen 2.5 (OpenRouter)": "qwen/qwen-2.5-72b-instruct:free"
+            }
+            res = or_client.chat.completions.create(model=model_map.get(provider_name, "meta-llama/llama-3.3-70b-instruct:free"), messages=[{"role": "user", "content": prompt}], timeout=10)
+            return True, res.choices[0].message.content.strip()
+            
+        else:
+            return False, "API Key Missing in Secrets"
+    except Exception as e:
+        return False, f"Server Busy ({str(e)[:35]}...)"
+
+def analyze_chart_vision_direct(image, symbol, tf):
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
     
-    prompt = f"Analyze chart for {symbol} ({tf}). Predict next candle direction (Bullish/Bearish) and give a 2-line reason."
+    prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
 
-    for model_name in vision_models:
+    # 1. Primary: Direct Gemini Official API
+    gemini_key = st.secrets.get("GEMINI_API_KEY")
+    if gemini_key:
         try:
-            response = ai_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}
-                        ]
-                    }
-                ],
+            g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key)
+            res = g_client.chat.completions.create(
+                model="gemini-1.5-flash",
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
+                timeout=12
+            )
+            return "⚡ **Direct Official Gemini API Result:**\n\n" + res.choices[0].message.content.strip()
+        except Exception:
+            pass
+
+    # 2. Fallback: OpenRouter Vision
+    or_key = st.secrets.get("OPENROUTER_API_KEY")
+    if or_key:
+        try:
+            or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
+            res = or_client.chat.completions.create(
+                model="google/gemini-flash-1.5",
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
                 timeout=15
             )
-            return f"✅ **Model Used ({model_name.split('/')[1]}):**\n\n" + response.choices[0].message.content.strip()
-        except Exception:
-            continue
-            
-    return "❌ All Vision AI endpoints are currently busy. Try again in a few seconds."
+            return "🌐 **OpenRouter Vision Fallback Result:**\n\n" + res.choices[0].message.content.strip()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    return "⚠️ Please add GEMINI_API_KEY in Secrets for direct instant chart analysis."
 
 # ==================== STREAMLIT UI ====================
 
@@ -241,7 +250,7 @@ with btn_col:
 
 st.divider()
 
-# Pair Selection Cards
+# Pair Selection Top Cards
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
     with cols[idx % 3]:
@@ -266,12 +275,12 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp
             st.rerun()
 
-# Deep Dive Section
+# Deep Dive Focus Section
 sel = st.session_state.selected_symbol
 meta = MAIN_SYMBOLS[sel]
 
 st.divider()
-st.subheader(f"🧠 Next Candle & Market Structure: {sel}")
+st.subheader(f"🧠 Quantitative Market Analysis: {sel}")
 
 tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
 df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
@@ -281,49 +290,62 @@ if q_res:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Live Price", f"{q_res['price']:,}")
     c2.metric("Quantum Signal", q_res['signal'])
-    c3.metric("Entropy Noise", f"{q_res['entropy']} / 1.0")
+    c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
     c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
     
-    st.markdown("---")
-    st.markdown("### 🌀 DTW 6-Candle Pattern Forecast")
+    # RESTORED CENTER MARKET STRUCTURE STATUS BOX
+    ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
+    st.markdown(f"""
+    <div class="quant-box {ent_class}">
+        <h4>🔬 Quant Market Structure Status:</h4>
+        <p>Market Noise Entropy: <b>{q_res['entropy']}</b> | Trend Score: <b>{q_res['score']}</b><br>
+        {'⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop. Trade next candles with extra caution.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Low noise chaos detected. Signal reliability is high.'}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 🌀 DTW 6-Candle Sequence Prediction")
     seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
     if seq:
-        st.write(f"Pattern Quality: **{seq['match_quality']}%**")
+        st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
         scols = st.columns(len(seq['sequence']))
         for i, step in enumerate(seq['sequence']):
             with scols[i]:
                 st.markdown(f"**Candle +{i+1}**\n\n{step}")
-                
-    st.markdown("---")
-    st.markdown("### 🤖 OpenRouter AI Model Signals (Individual Dropdowns)")
-    
-    metrics = f"Entropy: {q_res['entropy']}, Bull Prob: {q_res['mc_bull_prob']}%"
-    
-    # Define individual AI models with individual expander arrows
-    ai_models = {
-        "Gemini 2.0 Flash": "google/gemini-2.0-flash-exp:free",
-        "Meta Llama 3.3 (70B)": "meta-llama/llama-3.3-70b-instruct:free",
-        "DeepSeek R1": "deepseek/deepseek-r1:free",
-        "Qwen 2.5 (72B)": "qwen/qwen-2.5-72b-instruct:free"
-    }
-    
-    for name, model_id in ai_models.items():
-        with st.expander(f"▼ {name} Signal"):
-            if st.button(f"Get {name} Signal", key=f"btn_{name}"):
-                with st.spinner(f"Fetching from {name}..."):
-                    success, res = get_single_ai_analysis(model_id, sel, tf, q_res['signal'], metrics)
-                    if success:
-                        st.success(f"🟢 **Active**\n\n{res}")
-                    else:
-                        st.warning(f"⚠️ **Busy** - {res}")
 
-    st.markdown("---")
-    st.markdown("### 📸 Gemini AI Vision Chart Analysis")
-    up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
+    st.divider()
+    
+    # DEDICATED SEPARATE SECTION FOR MULTI-AI MODELS
+    st.subheader("🤖 Dedicated AI Next-Candle Predictor Engine")
+    st.caption("Select an AI model below to generate its specific next-candle forecast.")
+    
+    metrics_str = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
+    
+    ai_list = [
+        "Gemini (Direct)",
+        "Groq (Direct)",
+        "Llama 3.3 (OpenRouter)",
+        "DeepSeek R1 (OpenRouter)",
+        "Qwen 2.5 (OpenRouter)"
+    ]
+    
+    ai_cols = st.columns(len(ai_list))
+    for idx, model_name in enumerate(ai_list):
+        with ai_cols[idx]:
+            if st.button(f"Predict via\n{model_name}", key=f"btn_ai_{idx}"):
+                with st.spinner("Analyzing..."):
+                    ok, res = get_ai_next_candle_opinion(model_name, sel, tf, q_res['signal'], metrics_str)
+                    if ok:
+                        st.success(f"**{model_name}**\n\n{res}")
+                    else:
+                        st.error(f"**{model_name}**\n\n{res}")
+
+    st.divider()
+    st.subheader("📸 Gemini Direct Chart Screenshot Analyzer")
+    up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
     if up_file:
         img = Image.open(up_file)
         st.image(img, use_container_width=True)
         if st.button("Predict Next Candle via Vision AI"):
-            with st.spinner("Analyzing chart image..."):
-                st.info(analyze_chart_with_openrouter_vision(img, sel, tf))
-    
+            with st.spinner("Analyzing chart image via Direct Gemini API..."):
+                st.info(analyze_chart_vision_direct(img, sel, tf))
+                                 

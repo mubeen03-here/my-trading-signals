@@ -182,8 +182,6 @@ def analyze_chart_vision_native_google(image, symbol, tf):
     
     prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
     
-    # Official Direct Native Google API Endpoint
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{
@@ -199,18 +197,25 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-        res_json = response.json()
-        
-        if response.status_code == 200:
-            text_out = res_json['candidates'][0]['content']['parts'][0]['text']
-            return f"⚡ **Original Native Gemini Vision Result:**\n\n{text_out}"
-        else:
-            err_msg = res_json.get('error', {}).get('message', str(res_json))
-            return f"❌ Gemini Native API Error: {err_msg}"
-    except Exception as e:
-        return f"❌ Connection Error: {str(e)}"
+    # Updated Active Google Native Models Loop
+    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash"]
+    last_error = ""
+    
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=12)
+            res_json = response.json()
+            
+            if response.status_code == 200 and 'candidates' in res_json:
+                text_out = res_json['candidates'][0]['content']['parts'][0]['text']
+                return f"⚡ **Native Gemini Vision Result ({model_name}):**\n\n{text_out}"
+            else:
+                last_error = res_json.get('error', {}).get('message', str(res_json))
+        except Exception as e:
+            last_error = str(e)
+            
+    return f"❌ Gemini Native API Error: {last_error}"
 
 # ==================== MULTI-AI TEXT ROUTING ====================
 
@@ -219,10 +224,17 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
     
     try:
         if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={st.secrets['GEMINI_API_KEY']}"
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url, json=payload, timeout=10).json()
-            return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
+            candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash-latest"]
+            for model_name in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={st.secrets['GEMINI_API_KEY']}"
+                payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                try:
+                    res = requests.post(url, json=payload, timeout=8).json()
+                    if 'candidates' in res:
+                        return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
+                except:
+                    continue
+            return False, "Gemini API failed to respond."
             
         elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):
             groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=st.secrets["GROQ_API_KEY"])
@@ -356,3 +368,4 @@ if q_res:
         if st.button("Predict Next Candle via Native Gemini"):
             with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
                 st.info(analyze_chart_vision_native_google(img, sel, tf))
+            

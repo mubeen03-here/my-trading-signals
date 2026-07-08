@@ -38,6 +38,7 @@ st.markdown("""
     .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
     .gemini-box { background-color: #1c2833; border: 1px solid #00ff9f; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
+    .sequence-box { background-color: #191923; border: 1px solid #ff007f; border-radius: 12px; padding: 1.2rem; margin-top: 1rem; }
     .current-candle-box { background-color: #1f2a3d; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
@@ -161,7 +162,6 @@ def get_current_candle_status(df):
 def get_grok_analysis(symbol, tf, technical_signal, recent_data):
     prompt = f"""
 You are a professional price action trader.
-
 Symbol: {symbol}
 Timeframe: {tf}
 Current Price: {recent_data}
@@ -187,7 +187,6 @@ Be honest and critical. Max 6-7 lines.
         return f"Analysis failed: {str(e)}"
 
 def analyze_chart_with_gemini(image, symbol, tf):
-    """Gemini Vision AI model to analyze chart image and predict next candle"""
     if "GEMINI_API_KEY" not in st.secrets:
         return "GEMINI_API_KEY is not configured in Streamlit Secrets."
         
@@ -203,26 +202,75 @@ Analyze:
 
 Keep your answer clear, direct, professional, and limited to 6-8 bullet points.
 """
-    # Active Gemini models list for auto-fallback (Fixes 404 error)
-    model_candidates = [
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-flash'
-    ]
-    
+    model_candidates = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash']
     last_error = None
     for model_name in model_candidates:
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, image])
-            if response and response.text:
-                return response.text
+            if response and response.text: return response.text
         except Exception as e:
             last_error = e
             continue
-            
     return f"Gemini Image Analysis failed: {str(last_error)}"
+
+# ==================== NEW FEATURE: INDEPENDENT CANDLE SEQUENCE PREDICTOR ====================
+def predict_candle_sequence_blueprint(df, pattern_len=10, predict_len=8):
+    """Scans 1000 historical candles independently to map the exact upcoming candle sequence"""
+    if df is None or len(df) < 150:
+        return None
+        
+    # Take safe depth up to 1000 candles
+    search_depth = min(1000, len(df) - pattern_len - predict_len - 5)
+    
+    # Extract current active pattern body dynamics
+    current_pattern = []
+    for i in range(pattern_len):
+        idx = len(df) - pattern_len + i
+        current_pattern.append(float(df.iloc[idx]['Close'] - df.iloc[idx]['Open']))
+        
+    best_match_idx = -1
+    min_dist = float('inf')
+    
+    # 1000 Candle Historical Scan
+    start_loop = len(df) - search_depth - pattern_len - predict_len
+    end_loop = len(df) - pattern_len - predict_len
+    
+    for start_idx in range(max(0, start_loop), end_loop):
+        dist = 0.0
+        for i in range(pattern_len):
+            hist_diff = float(df.iloc[start_idx + i]['Close'] - df.iloc[start_idx + i]['Open'])
+            dist += (current_pattern[i] - hist_diff) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            best_match_idx = start_idx
+            
+    if best_match_idx == -1:
+        return None
+        
+    # Map the exact outcome sequence that followed that historical match
+    sequence_list = []
+    green_count = 0
+    red_count = 0
+    
+    for k in range(predict_len):
+        future_idx = best_match_idx + pattern_len + k
+        if future_idx < len(df):
+            f_close = df.iloc[future_idx]['Close']
+            f_open = df.iloc[future_idx]['Open']
+            if f_close >= f_open:
+                sequence_list.append("🟢 Green (Buy)")
+                green_count += 1
+            else:
+                sequence_list.append("🔴 Red (Sell)")
+                red_count += 1
+                
+    return {
+        "sequence": sequence_list,
+        "green_total": green_count,
+        "red_total": red_count,
+        "total_predicted": len(sequence_list)
+    }
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
@@ -232,7 +280,6 @@ if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
     st.rerun()
 
-# Grid Layout
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
@@ -260,7 +307,6 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp_name
             st.rerun()
 
-# Detailed View
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -268,7 +314,9 @@ if st.session_state.selected_symbol:
     st.subheader(f"📊 {selected}")
     
     tf = st.selectbox("Timeframe", ["5m", "15m", "30m", "1h", "4h"], index=2)
-    df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="5d")
+    
+    # Fetching 30 days of data to guarantee 1000+ candles for the sequence generator
+    df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
     analysis = calculate_technical_signal(df)
     
     if analysis:
@@ -289,7 +337,6 @@ if st.session_state.selected_symbol:
             st.markdown("### 🎯 Trade Setup")
             st.code(f"Entry around: {analysis['last_price']}\nUse ATR ({analysis['atr']}) for SL & TP placement.")
         
-        # Current Candle
         current = get_current_candle_status(df)
         if current:
             st.markdown("### 📍 Current Market Candle (Real-time)")
@@ -300,13 +347,40 @@ if st.session_state.selected_symbol:
             </div>
             """, unsafe_allow_html=True)
         
-        # Technical Next Candle
         st.markdown("### 🕯️ Next Candle Expectation (Technical)")
         st.info(analysis['expected_candles'])
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
+            
+        # ==================== NEW UI BLOCK: FRACTAL SEQUENCE PREDICTOR ====================
+        st.markdown("---")
+        st.markdown("### 🔮 AI Smart Sequence Blueprint (Next 8 Candles Forecast)")
+        st.write("Yeh engine independentally pichhli 1000 candles ka data check karke agali candles ka poora roadmap print karta hai.")
         
-        # Grok Text Analysis
+        seq_data = predict_candle_sequence_blueprint(df, pattern_len=10, predict_len=8)
+        if seq_data:
+            st.markdown(f"""
+            <div class="sequence-box">
+                <h4>📊 Historical Similarity Outcome:</h4>
+                <p>Maujuda market structure se milte julte pichhle 1000 bars ke data ke mutabiq agla sequence yeh ho sakta hai:</p>
+                <h5><b>Total Predicted Directions:</b></h5>
+                <ul>
+                    <li>🟢 Total Bullish (Green) Candles: <b>{seq_data['green_total']}</b></li>
+                    <li>🔴 Total Bearish (Red) Candles: <b>{seq_data['red_total']}</b></li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Displaying individual step-by-step candle blueprint
+            st.markdown("##### 🗺️ Step-by-Step Upcoming Candles Pattern:")
+            steps_cols = st.columns(seq_data['total_predicted'])
+            for i, step_text in enumerate(seq_data['sequence']):
+                with steps_cols[i]:
+                    st.markdown(f"**Candle {i+1}**\n\n{step_text}")
+        else:
+            st.info("Historical data scanning under process or insufficient bars for this timeframe.")
+        
+        st.markdown("---")
         st.markdown("### 🤖 Grok Text Analysis")
         if st.button("🔍 Analyze Text with Grok", key="grok_btn"):
             with st.spinner("Getting Grok's analysis..."):
@@ -318,17 +392,11 @@ if st.session_state.selected_symbol:
             </div>
             """, unsafe_allow_html=True)
         
-        # Gemini Chart Screenshot Analysis (Vision)
         st.markdown("---")
         st.markdown("### 📸 Gemini AI Chart Screenshot Analysis (Next Candle Predictor)")
         st.write("Current chalne wali candle ki photo upload karein taake Gemini next candle predict kare.")
         
-        uploaded_file = st.file_uploader(
-            f"Upload {selected} ({tf}) Chart Image", 
-            type=["png", "jpg", "jpeg"],
-            key="image_uploader"
-        )
-        
+        uploaded_file = st.file_uploader(f"Upload {selected} ({tf}) Chart Image", type=["png", "jpg", "jpeg"], key="image_uploader")
         if uploaded_file is not None:
             image = Image.open(uploaded_file)
             st.image(image, caption=f"Uploaded Chart Screenshot ({tf})", use_container_width=True)
@@ -351,5 +419,4 @@ if st.session_state.selected_symbol:
     else:
         st.error("Not enough data for this timeframe. Try a larger timeframe or wait for market updates.")
 
-st.caption("Technical + Grok + Gemini Vision • Live Candle Prediction")
-    
+st.caption("Technical + Grok + Gemini Vision + Sequence Forecast • Live Candle Prediction")

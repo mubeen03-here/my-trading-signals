@@ -203,12 +203,26 @@ Analyze:
 
 Keep your answer clear, direct, professional, and limited to 6-8 bullet points.
 """
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content([prompt, image])
-        return response.text
-    except Exception as e:
-        return f"Gemini Image Analysis failed: {str(e)}"
+    # Active Gemini models list for auto-fallback (Fixes 404 error)
+    model_candidates = [
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-flash'
+    ]
+    
+    last_error = None
+    for model_name in model_candidates:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content([prompt, image])
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+            
+    return f"Gemini Image Analysis failed: {str(last_error)}"
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
@@ -338,4 +352,4 @@ if st.session_state.selected_symbol:
         st.error("Not enough data for this timeframe. Try a larger timeframe or wait for market updates.")
 
 st.caption("Technical + Grok + Gemini Vision • Live Candle Prediction")
-        
+    

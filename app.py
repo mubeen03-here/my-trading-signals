@@ -5,13 +5,20 @@ import numpy as np
 from datetime import datetime
 import pytz
 from groq import Groq
+import google.generativeai as genai
+from PIL import Image
 
-# ==================== GROQ SETUP ====================
+# ==================== API KEYS SETUP ====================
 if "GROQ_API_KEY" in st.secrets:
     groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 else:
     st.error("GROQ_API_KEY is missing in Streamlit Secrets!")
     st.stop()
+
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.warning("⚠️ GEMINI_API_KEY missing in Secrets! Chart Image Analysis won't work until added.")
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
@@ -30,14 +37,13 @@ st.markdown("""
     .metric-value { font-size: 1.7rem; font-weight: 700; }
     .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
+    .gemini-box { background-color: #1c2833; border: 1px solid #00ff9f; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
     .current-candle-box { background-color: #1f2a3d; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = None
-if "uploaded_images" not in st.session_state:
-    st.session_state.uploaded_images = []
 
 MAIN_SYMBOLS = {
     "Bitcoin (BTC)": {"yf_ticker": "BTC-USD", "display": "BTC/USD"},
@@ -55,7 +61,6 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty: return None
         
-        # Safe MultiIndex Columns Flattening
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
             
@@ -77,16 +82,13 @@ def calculate_technical_signal(df):
     if df is None or len(df) < 40: return None
     df = df.copy()
     
-    # Ensure values are strictly numeric and 1D
     close = df['Close'].astype(float)
     high = df['High'].astype(float)
     low = df['Low'].astype(float)
     
-    # Indicators
     df['EMA_9'] = close.ewm(span=9, adjust=False).mean()
     df['EMA_21'] = close.ewm(span=21, adjust=False).mean()
     
-    # Robust RSI Calculation (No Division by Zero)
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = (-delta).where(delta < 0, 0.0)
@@ -94,16 +96,14 @@ def calculate_technical_signal(df):
     avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df['RSI'] = 100 - (100 / (1 + rs))
-    df['RSI'] = df['RSI'].fillna(50) # Fallback if perfectly flat
+    df['RSI'] = df['RSI'].fillna(50)
     
-    # MACD
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = macd_line - signal_line
     
-    # Real ATR Calculation
     tr1 = high - low
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
@@ -186,13 +186,36 @@ Be honest and critical. Max 6-7 lines.
     except Exception as e:
         return f"Analysis failed: {str(e)}"
 
+def analyze_chart_with_gemini(image, symbol, tf):
+    """Gemini Vision AI model to analyze chart image and predict next candle"""
+    if "GEMINI_API_KEY" not in st.secrets:
+        return "GEMINI_API_KEY is not configured in Streamlit Secrets."
+        
+    prompt = f"""
+You are an elite price action trader and candlestick patterns expert.
+Analyze this chart screenshot for {symbol} on the {tf} timeframe.
+
+Analyze:
+1. **Current Forming Candle:** Look at the live/present forming candle (wicks, body, momentum).
+2. **Key Price Action:** Support/Resistance levels, trendlines, or active chart patterns.
+3. **NEXT Candle Prediction:** Predict the direction of the upcoming NEXT candle (Bullish Green 🟢 or Bearish Red 🔴) with estimated probability (%).
+4. **Actionable Signal:** BUY, SELL, or WAIT with exact reasons based on the chart image.
+
+Keep your answer clear, direct, professional, and limited to 6-8 bullet points.
+"""
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content([prompt, image])
+        return response.text
+    except Exception as e:
+        return f"Gemini Image Analysis failed: {str(e)}"
+
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Grok Analysis")
+st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Grok + Gemini Vision Analysis")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
-    st.session_state.uploaded_images = []
     st.rerun()
 
 # Grid Layout
@@ -221,7 +244,6 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
         
         if st.button(f"View Analysis", key=f"btn_{disp_name}"):
             st.session_state.selected_symbol = disp_name
-            st.session_state.uploaded_images = []
             st.rerun()
 
 # Detailed View
@@ -270,43 +292,50 @@ if st.session_state.selected_symbol:
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # Grok Analysis
-        st.markdown("### 🤖 Grok Independent Analysis")
-        
-        if st.button("🔍 Analyze with Grok", key="grok_btn"):
+        # Grok Text Analysis
+        st.markdown("### 🤖 Grok Text Analysis")
+        if st.button("🔍 Analyze Text with Grok", key="grok_btn"):
             with st.spinner("Getting Grok's analysis..."):
                 recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}, ATR: {analysis['atr']}"
-                grok_response = get_grok_analysis(
-                    selected, tf, analysis['signal'], recent
-                )
+                grok_response = get_grok_analysis(selected, tf, analysis['signal'], recent)
             st.markdown(f"""
             <div class="ai-box">
             {grok_response}
             </div>
             """, unsafe_allow_html=True)
-        else:
-            st.info("Click the button above to get Grok's independent analysis and reasoning.")
         
-        # Image Upload (Future)
-        with st.expander("📎 Upload Chart Screenshots (Coming Soon)", expanded=False):
-            st.info("Image analysis feature is temporarily disabled due to API issues.")
-            uploaded_files = st.file_uploader(
-                "Upload chart images (PNG/JPG)", 
-                type=["png", "jpg", "jpeg"], 
-                accept_multiple_files=True,
-                key="image_uploader"
-            )
-            if uploaded_files:
-                st.session_state.uploaded_images = uploaded_files
-                st.success(f"{len(uploaded_files)} image(s) uploaded!")
+        # Gemini Chart Screenshot Analysis (Vision)
+        st.markdown("---")
+        st.markdown("### 📸 Gemini AI Chart Screenshot Analysis (Next Candle Predictor)")
+        st.write("Current chalne wali candle ki photo upload karein taake Gemini next candle predict kare.")
         
+        uploaded_file = st.file_uploader(
+            f"Upload {selected} ({tf}) Chart Image", 
+            type=["png", "jpg", "jpeg"],
+            key="image_uploader"
+        )
+        
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+            st.image(image, caption=f"Uploaded Chart Screenshot ({tf})", use_container_width=True)
+            
+            if st.button("🔮 Predict Next Candle with Gemini Vision", key="gemini_btn"):
+                with st.spinner("Gemini is analyzing chart candles, price action & predicting next candle..."):
+                    gemini_result = analyze_chart_with_gemini(image, selected, tf)
+                st.markdown(f"""
+                <div class="gemini-box">
+                <h4>🔮 Gemini AI Prediction:</h4>
+                {gemini_result}
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("---")
         st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
-        
-        st.caption("Grok analysis runs only when you click the button above.")
+            
     else:
         st.error("Not enough data for this timeframe. Try a larger timeframe or wait for market updates.")
 
-st.caption("Technical + Grok Analysis • Free Tier • Gemini Image Analysis Coming Soon")
-    
+st.caption("Technical + Grok + Gemini Vision • Live Candle Prediction")
+        

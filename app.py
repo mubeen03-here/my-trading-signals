@@ -28,6 +28,10 @@ st.markdown("""
     .quant-box { background-color: #131924; border: 1px solid #1f6feb; border-radius: 12px; padding: 1.2rem; margin: 1rem 0; }
     .entropy-high { border-left: 6px solid #f44336; }
     .entropy-low { border-left: 6px solid #00c853; }
+    
+    /* Confluence Section Custom Styling */
+    .confluence-container { background-color: #0d1117; border: 2px solid #238636; border-radius: 16px; padding: 1.5rem; margin-top: 2rem; }
+    .ind-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1rem; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -169,6 +173,160 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     quality = round(max(0, 100 - (avg_dist * 4)), 1)
     return {"sequence": sequence, "match_quality": quality}
 
+# ==================== 3-INDICATOR CONFLUENCE ENGINE ====================
+
+def calculate_supertrend(df, period=10, multiplier=3.0):
+    high = df['High'].astype(float).values
+    low = df['Low'].astype(float).values
+    close = df['Close'].astype(float).values
+    n = len(df)
+    
+    tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
+    tr = np.insert(tr, 0, high[0] - low[0])
+    atr = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean().values
+    
+    hl2 = (high + low) / 2.0
+    up = hl2 - (multiplier * atr)
+    dn = hl2 + (multiplier * atr)
+    
+    trend = np.ones(n)
+    final_up = np.zeros(n)
+    final_dn = np.zeros(n)
+    
+    for i in range(1, n):
+        final_up[i] = max(up[i], final_up[i-1]) if close[i-1] > final_up[i-1] else up[i]
+        final_dn[i] = min(dn[i], final_dn[i-1]) if close[i-1] < final_dn[i-1] else dn[i]
+        
+        if trend[i-1] == -1 and close[i] > final_dn[i-1]:
+            trend[i] = 1
+        elif trend[i-1] == 1 and close[i] < final_up[i-1]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i-1]
+            
+    return "BULLISH" if trend[-1] == 1 else "BEARISH"
+
+def calculate_ut_bot(df, key_value=1, atr_period=10):
+    high = df['High'].astype(float).values
+    low = df['Low'].astype(float).values
+    close = df['Close'].astype(float).values
+    n = len(df)
+    
+    tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
+    tr = np.insert(tr, 0, high[0] - low[0])
+    atr = pd.Series(tr).ewm(alpha=1/atr_period, adjust=False).mean().values
+    n_loss = key_value * atr
+    
+    trail = np.zeros(n)
+    for i in range(1, n):
+        if close[i] > trail[i-1] and close[i-1] > trail[i-1]:
+            trail[i] = max(trail[i-1], close[i] - n_loss[i])
+        elif close[i] < trail[i-1] and close[i-1] < trail[i-1]:
+            trail[i] = min(trail[i-1], close[i] + n_loss[i])
+        elif close[i] > trail[i-1]:
+            trail[i] = close[i] - n_loss[i]
+        else:
+            trail[i] = close[i] + n_loss[i]
+            
+    return "BUY / BULLISH" if close[-1] > trail[-1] else "SELL / BEARISH"
+
+def calculate_market_structure(df, length=5):
+    high = df['High'].astype(float).values
+    low = df['Low'].astype(float).values
+    close = df['Close'].astype(float).values
+    n = len(df)
+    
+    p = length // 2
+    upper_val, lower_val = np.nan, np.nan
+    upper_crossed, lower_crossed = True, True
+    bias = "NEUTRAL"
+    
+    for i in range(length, n):
+        if high[i-p] == np.max(high[i-length+1 : i+1]):
+            upper_val, upper_crossed = high[i-p], False
+            
+        if low[i-p] == np.min(low[i-length+1 : i+1]):
+            lower_val, lower_crossed = low[i-p], False
+            
+        if not np.isnan(upper_val) and not upper_crossed and close[i] > upper_val:
+            bias = "BULLISH (BOS/CHoCH)"
+            upper_crossed = True
+            
+        if not np.isnan(lower_val) and not lower_crossed and close[i] < lower_val:
+            bias = "BEARISH (BOS/CHoCH)"
+            lower_crossed = True
+            
+    return bias
+
+def render_confluence_hub_section(df_data, symbol_name, current_tf):
+    st.markdown('<div class="confluence-container">', unsafe_allow_html=True)
+    st.markdown(f"### 🛡️ Independent Multi-Indicator Confluence Matrix ({symbol_name} - {current_tf})")
+    st.caption("Custom indicator logic parsed from PineScript into Python Engine.")
+    
+    if df_data is None or len(df_data) < 30:
+        st.warning("Insufficient data to calculate indicator signals.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+        
+    st_sig = calculate_supertrend(df_data)
+    ut_sig = calculate_ut_bot(df_data)
+    ms_sig = calculate_market_structure(df_data)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        color_st = "#00c853" if "BULLISH" in st_sig else "#c62828"
+        st.markdown(f"""
+        <div class="ind-card">
+            <h4>1. Supertrend Indicator</h4>
+            <h3 style="color:{color_st};">{st_sig}</h3>
+            <p>ATR Period: 10 | Multiplier: 3.0</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col2:
+        color_ut = "#00c853" if "BUY" in ut_sig else "#c62828"
+        st.markdown(f"""
+        <div class="ind-card">
+            <h4>2. UT Bot Alerts</h4>
+            <h3 style="color:{color_ut};">{ut_sig}</h3>
+            <p>Key Value: 1 | ATR Period: 10</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col3:
+        color_ms = "#00c853" if "BULLISH" in ms_sig else ("#c62828" if "BEARISH" in ms_sig else "#ff9800")
+        st.markdown(f"""
+        <div class="ind-card">
+            <h4>3. LuxAlgo Market Structure</h4>
+            <h3 style="color:{color_ms};">{ms_sig}</h3>
+            <p>Fractal Length: 5 (BOS/CHoCH)</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    # Confluence Signal Aggregation
+    bull_count = sum(1 for s in [st_sig, ut_sig, ms_sig] if "BULLISH" in s or "BUY" in s)
+    bear_count = sum(1 for s in [st_sig, ut_sig, ms_sig] if "BEARISH" in s or "SELL" in s)
+    
+    st.write("")
+    if bull_count >= 2:
+        final_conf = "🔥 STRONG CONFLUENCE BUY SIGNAL"
+        conf_badge = "strong-buy"
+    elif bear_count >= 2:
+        final_conf = "🔻 STRONG CONFLUENCE SELL SIGNAL"
+        conf_badge = "strong-sell"
+    else:
+        final_conf = "⚠️ MIXED SIGNALS / WAIT"
+        conf_badge = "neutral"
+        
+    st.markdown(f"""
+    <div style="text-align:center; padding: 1rem; background-color:#161b22; border-radius:12px; margin-top:10px;">
+        <h2>Aggregated Signal: <span class="signal-badge {conf_badge}" style="font-size:1.3rem;">{final_conf}</span></h2>
+        <p style="color:#8b949e; margin-top:5px;">Confluence Score: {bull_count}/3 Bullish | {bear_count}/3 Bearish</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # ==================== NATIVE GOOGLE GEMINI VISION ENGINE ====================
 
 def analyze_chart_vision_native_google(image, symbol, tf):
@@ -181,23 +339,16 @@ def analyze_chart_vision_native_google(image, symbol, tf):
     img_b64 = base64.b64encode(buffered.getvalue()).decode()
     
     prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
-    
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{
             "parts": [
                 {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/png",
-                        "data": img_b64
-                    }
-                }
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}}
             ]
         }]
     }
     
-    # Updated Active Google Native Models Loop
     candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash"]
     last_error = ""
     
@@ -206,7 +357,6 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=12)
             res_json = response.json()
-            
             if response.status_code == 200 and 'candidates' in res_json:
                 text_out = res_json['candidates'][0]['content']['parts'][0]['text']
                 return f"⚡ **Native Gemini Vision Result ({model_name}):**\n\n{text_out}"
@@ -321,51 +471,4 @@ if q_res:
         <p>Market Noise Entropy: <b>{q_res['entropy']}</b> | Trend Score: <b>{q_res['score']}</b><br>
         {'⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop. Trade next candles with extra caution.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Low noise chaos detected. Signal reliability is high.'}</p>
     </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("### 🌀 DTW 6-Candle Sequence Prediction")
-    seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
-    if seq:
-        st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
-        scols = st.columns(len(seq['sequence']))
-        for i, step in enumerate(seq['sequence']):
-            with scols[i]:
-                st.markdown(f"**Candle +{i+1}**\n\n{step}")
-
-    st.divider()
-    
-    # SEPARATE DEDICATED SECTION FOR AI MODELS
-    st.subheader("🤖 Dedicated AI Next-Candle Predictor Engine")
-    st.caption("Select an AI model below to generate its specific next-candle forecast.")
-    
-    metrics_str = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
-    
-    ai_list = [
-        "Gemini (Direct)",
-        "Groq (Direct)",
-        "Llama 3.3 (OpenRouter)",
-        "DeepSeek R1 (OpenRouter)",
-        "Qwen 2.5 (OpenRouter)"
-    ]
-    
-    ai_cols = st.columns(len(ai_list))
-    for idx, model_name in enumerate(ai_list):
-        with ai_cols[idx]:
-            if st.button(f"Predict via\n{model_name}", key=f"btn_ai_{idx}"):
-                with st.spinner("Analyzing..."):
-                    ok, res = get_ai_next_candle_opinion(model_name, sel, tf, q_res['signal'], metrics_str)
-                    if ok:
-                        st.success(f"**{model_name}**\n\n{res}")
-                    else:
-                        st.error(f"**{model_name}**\n\n{res}")
-
-    st.divider()
-    st.subheader("📸 Gemini Native Vision Chart Analyzer")
-    up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
-    if up_file:
-        img = Image.open(up_file)
-        st.image(img, use_container_width=True)
-        if st.button("Predict Next Candle via Native Gemini"):
-            with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
-                st.info(analyze_chart_vision_native_google(img, sel, tf))
-            
+ 

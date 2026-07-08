@@ -4,22 +4,24 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pytz
-from groq import Groq
-import google.generativeai as genai
+from openai import OpenAI
 from PIL import Image
-import math
+import base64
+import io
 
-# ==================== API KEYS SETUP ====================
-if "GROQ_API_KEY" in st.secrets:
-    groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+# ==================== SINGLE OPENROUTER API SETUP ====================
+if "OPENROUTER_API_KEY" in st.secrets:
+    ai_client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=st.secrets["OPENROUTER_API_KEY"],
+    )
 else:
-    st.error("GROQ_API_KEY is missing in Streamlit Secrets!")
+    st.error("⚠️ OPENROUTER_API_KEY is missing in Streamlit Secrets! Please add it.")
     st.stop()
 
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
+# Page Config & Auto-Refresh Header (Har 30 Seconds Mein Auto Update)
 st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
+st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -37,7 +39,6 @@ st.markdown("""
     .entropy-high { border-left: 5px solid #f44336; }
     .entropy-low { border-left: 5px solid #00c853; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
-    .gemini-box { background-color: #1c2833; border: 1px solid #00ff9f; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,7 +55,7 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-@st.cache_data(ttl=35, show_spinner=False)
+@st.cache_data(ttl=25, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="30d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
@@ -76,18 +77,15 @@ def fetch_ohlcv(ticker, interval="15m", period="30d"):
 # ==================== QUANT MATHEMATICAL MODELS ====================
 
 def calculate_shannon_entropy(series, bins=10):
-    """Calculates Market Noise (Entropy). High Entropy = Chaos/No Trade."""
     returns = np.diff(np.log(series))
     hist, _ = np.histogram(returns, bins=bins)
     prob = hist / float(np.sum(hist))
     prob = prob[prob > 0]
     entropy = -np.sum(prob * np.log2(prob))
     max_entropy = np.log2(bins)
-    normalized_entropy = entropy / max_entropy
-    return round(normalized_entropy, 3)
+    return round(entropy / max_entropy, 3)
 
 def fast_dtw_distance(s1, s2):
-    """Dynamic Time Warping: Non-linear pattern similarity matching."""
     n, m = len(s1), len(s2)
     dtw_matrix = np.full((n + 1, m + 1), fill_value=np.inf)
     dtw_matrix[0, 0] = 0
@@ -98,7 +96,6 @@ def fast_dtw_distance(s1, s2):
     return dtw_matrix[n, m]
 
 def monte_carlo_simulation(last_price, returns_std, num_sims=300, steps=5):
-    """Simulates 300 price trajectories to compute win probability."""
     sims = np.zeros((num_sims, steps))
     for i in range(num_sims):
         path = [last_price]
@@ -107,32 +104,24 @@ def monte_carlo_simulation(last_price, returns_std, num_sims=300, steps=5):
             path.append(path[-1] * (1 + shock))
         sims[i] = path
     bullish_paths = np.sum(sims[:, -1] > last_price)
-    win_rate = (bullish_paths / num_sims) * 100
-    return round(win_rate, 1)
+    return round((bullish_paths / num_sims) * 100, 1)
 
 def calculate_quant_signals(df):
     if df is None or len(df) < 50: return None
     df = df.copy()
     close = df['Close'].astype(float).values
     
-    # 1. Entropy Check (Noise Detection)
     entropy_score = calculate_shannon_entropy(close[-40:])
-    
-    # 2. Return volatility
     log_returns = np.diff(np.log(close[-50:]))
     volatility = np.std(log_returns)
+    monte_carlo_bull_prob = monte_carlo_simulation(close[-1], volatility, num_sims=300, steps=5)
     
-    # 3. Monte Carlo Win Rate
-    monte_carlo_bull_prob = monte_carlo_simulation(close[-1], volatility, num_sims=400, steps=5)
-    
-    # Technical Indicators
     df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
     
     last = df.iloc[-1]
     price = float(last['Close'])
     
-    # Base Signal
     score = 0
     if price > last['EMA_9'] > last['EMA_21']: score += 2
     elif price < last['EMA_9'] < last['EMA_21']: score -= 2
@@ -146,7 +135,6 @@ def calculate_quant_signals(df):
     elif score <= -1: signal, badge = "SELL", "sell"
     else: signal, badge = "WAIT", "neutral"
     
-    # Override signal if Market Entropy (Noise) is extremely high
     is_noisy = entropy_score > 0.88
     if is_noisy:
         signal = "WAIT (High Noise)"
@@ -159,66 +147,74 @@ def calculate_quant_signals(df):
 
 def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     if df is None or len(df) < 200: return None
-    
     close = df['Close'].astype(float).values
     open_p = df['Open'].astype(float).values
     
-    # Normalize current pattern shape
     curr = (close[-pattern_len:] - open_p[-pattern_len:])
     curr_norm = (curr - np.mean(curr)) / (np.std(curr) + 1e-8)
     
-    best_dist = float('inf')
-    best_idx = -1
-    
+    best_dist, best_idx = float('inf'), -1
     search_range = min(800, len(df) - pattern_len - predict_len - 2)
     for idx in range(len(df) - search_range - pattern_len - predict_len, len(df) - pattern_len - predict_len):
         hist = (close[idx:idx+pattern_len] - open_p[idx:idx+pattern_len])
         hist_norm = (hist - np.mean(hist)) / (np.std(hist) + 1e-8)
-        
         dist = fast_dtw_distance(curr_norm, hist_norm)
         if dist < best_dist:
-            best_dist = dist
-            best_idx = idx
+            best_dist, best_idx = dist, idx
             
     if best_idx == -1: return None
     
     sequence = []
-    g_count, r_count = 0, 0
     for k in range(predict_len):
         f_idx = best_idx + pattern_len + k
         if f_idx < len(df):
-            if close[f_idx] >= open_p[f_idx]:
-                sequence.append("🟢 Green")
-                g_count += 1
-            else:
-                sequence.append("🔴 Red")
-                r_count += 1
+            sequence.append("🟢 Green" if close[f_idx] >= open_p[f_idx] else "🔴 Red")
                 
-    return {"sequence": sequence, "green": g_count, "red": r_count, "match_quality": round(100 - (best_dist * 5), 1)}
+    return {"sequence": sequence, "match_quality": round(max(0, 100 - (best_dist * 5)), 1)}
 
-def get_grok_analysis(symbol, tf, signal, metrics):
-    prompt = f"Symbol: {symbol}, TF: {tf}, Signal: {signal}, Quant Metrics: {metrics}. Provide a direct 5-line market execution plan."
+# ==================== OPENROUTER UNIFIED FUNCTIONS ====================
+
+def get_openrouter_text_analysis(symbol, tf, signal, metrics):
+    prompt = f"Symbol: {symbol}, Timeframe: {tf}, Signal: {signal}, Metrics: {metrics}. Give 4 concise bullet points on market bias and immediate execution plan."
     try:
-        res = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4, max_tokens=200
+        response = ai_client.chat.completions.create(
+            model="meta-llama/llama-3.3-70b-instruct:free",
+            messages=[{"role": "user", "content": prompt}]
         )
-        return res.choices[0].message.content.strip()
-    except Exception as e: return f"Grok Error: {str(e)}"
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"OpenRouter Text AI Error: {str(e)}"
 
-def analyze_chart_with_gemini(image, symbol, tf):
-    if "GEMINI_API_KEY" not in st.secrets: return "Gemini Key Missing"
-    prompt = f"Analyze this chart image for {symbol} ({tf}). Predict next candle direction (Bullish/Bearish) with clear reasoning."
+def analyze_chart_with_openrouter_vision(image, symbol, tf):
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        res = model.generate_content([prompt, image])
-        return res.text
-    except Exception as e: return f"Gemini Error: {str(e)}"
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        prompt = f"Analyze this chart screenshot for {symbol} ({tf}). Predict the next candle direction (Bullish/Bearish) with clear technical reasoning."
+
+        response = ai_client.chat.completions.create(
+            model="google/gemini-2.0-flash-exp:free",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_str}"}
+                        }
+                    ]
+                }
+            ]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"OpenRouter Vision AI Error: {str(e)}"
 
 # ==================== STREAMLIT UI ====================
-st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine</h1>', unsafe_allow_html=True)
-st.caption(f"PKT: {get_pakistan_time()} | Entropy + DTW Non-Linear Fractals + Monte Carlo")
+st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine (OpenRouter Unified)</h1>', unsafe_allow_html=True)
+st.caption(f"Live PKT: {get_pakistan_time()} | Auto Refreshes Every 30s | Powered by OpenRouter")
 
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
@@ -228,9 +224,7 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
         if q_df is not None:
             anal = calculate_quant_signals(q_df)
             if anal:
-                p = anal["price"]
-                q_sig = anal["signal"]
-                badge = anal["badge_class"]
+                p, q_sig, badge = anal["price"], anal["signal"], anal["badge_class"]
         st.markdown(f"""
         <div class="symbol-card">
             <strong>{meta['display']}</strong><br>
@@ -259,16 +253,14 @@ if st.session_state.selected_symbol:
         c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
         c4.metric("Monte Carlo Bullish Prob.", f"{q_res['mc_bull_prob']}%")
         
-        # Entropy Warning
         ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
         st.markdown(f"""
         <div class="quant-box {ent_class}">
             <h4>🔬 Shannon Market Noise Analysis:</h4>
-            <p>Market Entropy is <b>{q_res['entropy']}</b>. {'⚠️ High Chaos Detected: Technical signals disabled to prevent fakeouts.' if q_res['is_noisy'] else '✅ Clean Market Structure: Signal confidence is high.'}</p>
+            <p>Market Entropy: <b>{q_res['entropy']}</b>. {'⚠️ High Chaos Detected: Technical signals paused.' if q_res['is_noisy'] else '✅ Clean Market Structure: Signal confidence is high.'}</p>
         </div>
         """, unsafe_allow_html=True)
         
-        # DTW Sequence Predictor
         st.markdown("### 🌀 Dynamic Time Warping (DTW) Sequence Forecast")
         seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
         if seq:
@@ -278,19 +270,20 @@ if st.session_state.selected_symbol:
                 with scols[i]:
                     st.markdown(f"**Candle {i+1}**\n\n{step}")
                     
-        # Grok & Gemini
         st.markdown("---")
-        st.markdown("### 🤖 Grok AI Strategic Execution")
-        if st.button("Generate Grok Tactical Plan"):
-            metrics = f"Entropy: {q_res['entropy']}, MC Prob: {q_res['mc_bull_prob']}%"
-            st.info(get_grok_analysis(sel, tf, q_res['signal'], metrics))
+        st.markdown("### 🤖 OpenRouter AI Text Analysis (Llama 3.3)")
+        if st.button("Generate Tactical Plan"):
+            metrics = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
+            with st.spinner("Calling OpenRouter..."):
+                st.info(get_openrouter_text_analysis(sel, tf, q_res['signal'], metrics))
             
         st.markdown("---")
-        st.markdown("### 📸 Gemini AI Vision Chart Analysis")
+        st.markdown("### 📸 OpenRouter Gemini AI Vision Chart Analysis")
         up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
         if up_file:
             img = Image.open(up_file)
             st.image(img, use_container_width=True)
-            if st.button("Analyze Chart Image"):
-                st.success(analyze_chart_with_gemini(img, sel, tf))
+            if st.button("Analyze Chart Image via OpenRouter"):
+                with st.spinner("Analyzing chart image with Gemini 2.0 via OpenRouter..."):
+                    st.success(analyze_chart_with_openrouter_vision(img, sel, tf))
     

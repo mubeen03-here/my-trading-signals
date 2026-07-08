@@ -53,7 +53,8 @@ def get_pakistan_time():
 def fetch_ohlcv(ticker, interval="15m", period="30d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
-        if df is None or df.empty: return None
+        if df is None or df.empty:
+            return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
         df = df.reset_index()
@@ -61,11 +62,13 @@ def fetch_ohlcv(ticker, interval="15m", period="30d"):
         
         rename_map = {}
         for col in df.columns:
-            if "datetime" in col.lower() or "date" in col.lower(): rename_map[col] = "Datetime"
-            elif col.lower() in ["close", "open", "high", "low"]: rename_map[col] = col.capitalize()
+            if "datetime" in col.lower() or "date" in col.lower():
+                rename_map[col] = "Datetime"
+            elif col.lower() in ["close", "open", "high", "low"]:
+                rename_map[col] = col.capitalize()
         df = df.rename(columns=rename_map)
         return df[["Datetime", "Open", "High", "Low", "Close"]].dropna()
-    except:
+    except Exception:
         return None
 
 # ==================== QUANT MATHEMATICAL MODELS ====================
@@ -77,7 +80,7 @@ def calculate_shannon_entropy(series, bins=10):
     prob = prob[prob > 0]
     entropy = -np.sum(prob * np.log2(prob))
     max_entropy = np.log2(bins)
-    return round(entropy / max_entropy, 3)
+    return round(float(entropy / max_entropy), 3)
 
 def fast_dtw_distance(s1, s2):
     n, m = len(s1), len(s2)
@@ -98,10 +101,11 @@ def monte_carlo_simulation(last_price, returns_std, num_sims=300, steps=5):
             path.append(path[-1] * (1 + shock))
         sims[i] = path
     bullish_paths = np.sum(sims[:, -1] > last_price)
-    return round((bullish_paths / num_sims) * 100, 1)
+    return round(float((bullish_paths / num_sims) * 100), 1)
 
 def calculate_quant_signals(df):
-    if df is None or len(df) < 50: return None
+    if df is None or len(df) < 50:
+        return None
     df = df.copy()
     close = df['Close'].astype(float).values
     
@@ -117,17 +121,26 @@ def calculate_quant_signals(df):
     price = float(last['Close'])
     
     score = 0
-    if price > last['EMA_9'] > last['EMA_21']: score += 2
-    elif price < last['EMA_9'] < last['EMA_21']: score -= 2
+    if price > last['EMA_9'] > last['EMA_21']:
+        score += 2
+    elif price < last['EMA_9'] < last['EMA_21']:
+        score -= 2
     
-    if monte_carlo_bull_prob > 58: score += 2
-    elif monte_carlo_bull_prob < 42: score -= 2
+    if monte_carlo_bull_prob > 58:
+        score += 2
+    elif monte_carlo_bull_prob < 42:
+        score -= 2
     
-    if score >= 3: signal, badge = "STRONG BUY", "strong-buy"
-    elif score >= 1: signal, badge = "BUY", "buy"
-    elif score <= -3: signal, badge = "STRONG SELL", "strong-sell"
-    elif score <= -1: signal, badge = "SELL", "sell"
-    else: signal, badge = "WAIT", "neutral"
+    if score >= 3:
+        signal, badge = "STRONG BUY", "strong-buy"
+    elif score >= 1:
+        signal, badge = "BUY", "buy"
+    elif score <= -3:
+        signal, badge = "STRONG SELL", "strong-sell"
+    elif score <= -1:
+        signal, badge = "SELL", "sell"
+    else:
+        signal, badge = "WAIT", "neutral"
     
     is_noisy = entropy_score > 0.88
     if is_noisy:
@@ -140,7 +153,8 @@ def calculate_quant_signals(df):
     }
 
 def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
-    if df is None or len(df) < 200: return None
+    if df is None or len(df) < 200:
+        return None
     close = df['Close'].astype(float).values
     open_p = df['Open'].astype(float).values
     
@@ -156,7 +170,8 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
         dist = fast_dtw_distance(curr_norm, hist_norm)
         matches.append((dist, idx))
         
-    if not matches: return None
+    if not matches:
+        return None
     matches.sort(key=lambda x: x[0])
     top_3 = matches[:3]
     
@@ -170,7 +185,7 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
         sequence.append("🟢 Green" if bull_votes >= 2 else "🔴 Red")
         
     avg_dist = np.mean([m[0] for m in top_3])
-    quality = round(max(0, 100 - (avg_dist * 4)), 1)
+    quality = round(float(max(0, 100 - (avg_dist * 4))), 1)
     return {"sequence": sequence, "match_quality": quality}
 
 # ==================== 3-INDICATOR CONFLUENCE ENGINE ====================
@@ -358,7 +373,7 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
                     res = requests.post(url, json=payload, timeout=8).json()
                     if 'candidates' in res:
                         return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
-                except:
+                except Exception:
                     continue
             return False, "Gemini API failed to respond."
             
@@ -446,4 +461,44 @@ if q_res:
         st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
         scols = st.columns(len(seq['sequence']))
         for i, step in enumerate(seq['sequence']):
-            with scol
+            with scols[i]:
+                st.markdown(f"**Candle +{i+1}**\n\n{step}")
+
+    st.divider()
+    
+    st.subheader("🤖 Dedicated AI Next-Candle Predictor Engine")
+    st.caption("Select an AI model below to generate its specific next-candle forecast.")
+    
+    metrics_str = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
+    
+    ai_list = [
+        "Gemini (Direct)",
+        "Groq (Direct)",
+        "Llama 3.3 (OpenRouter)",
+        "DeepSeek R1 (OpenRouter)",
+        "Qwen 2.5 (OpenRouter)"
+    ]
+    
+    ai_cols = st.columns(len(ai_list))
+    for idx, model_name in enumerate(ai_list):
+        with ai_cols[idx]:
+            if st.button(f"Predict via\n{model_name}", key=f"btn_ai_{idx}"):
+                with st.spinner("Analyzing..."):
+                    ok, res = get_ai_next_candle_opinion(model_name, sel, tf, q_res['signal'], metrics_str)
+                    if ok:
+                        st.success(f"**{model_name}**\n\n{res}")
+                    else:
+                        st.error(f"**{model_name}**\n\n{res}")
+
+    st.divider()
+    st.subheader("📸 Gemini Native Vision Chart Analyzer")
+    up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
+    if up_file:
+        img = Image.open(up_file)
+        st.image(img, use_container_width=True)
+        if st.button("Predict Next Candle via Native Gemini"):
+            with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
+                st.info(analyze_chart_vision_native_google(img, sel, tf))
+
+# Independent Confluence Hub at Bottom
+render_confluence_hub_section(df, sel, tf)

@@ -27,8 +27,8 @@ st.markdown("""
     .stApp { background-color: #0b0e14; color: #e6edf3; }
     .main-header { font-size: 2.2rem; font-weight: 800; background: linear-gradient(90deg, #00f2fe, #4facfe);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.2rem; }
-    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; }
-    .signal-badge { padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 700; font-size: 0.85rem; display: inline-block; }
+    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; text-align: center; }
+    .signal-badge { padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 700; font-size: 0.85rem; display: inline-block; margin-top: 5px; }
     .strong-buy { background-color: #00c853; color: white; }
     .buy { background-color: #2e7d32; color: white; }
     .neutral { background-color: #ff9800; color: white; }
@@ -40,14 +40,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-if "selected_symbol" not in st.session_state:
-    st.session_state.selected_symbol = None
-
+# Selected Pair Session State - Default to BTC so page never resets/closes
 MAIN_SYMBOLS = {
     "Bitcoin (BTC)": {"yf_ticker": "BTC-USD", "display": "BTC/USD"},
     "USD/JPY": {"yf_ticker": "USDJPY=X", "display": "USD/JPY"},
     "NAS100": {"yf_ticker": "NQ=F", "display": "NAS100 (NQ)"},
 }
+
+if "selected_symbol" not in st.session_state or st.session_state.selected_symbol is None:
+    st.session_state.selected_symbol = "Bitcoin (BTC)"
 
 def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
@@ -170,18 +171,30 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
                 
     return {"sequence": sequence, "match_quality": round(max(0, 100 - (best_dist * 5)), 1)}
 
-# ==================== OPENROUTER UNIFIED FUNCTIONS ====================
+# ==================== MULTI-MODEL FALLBACK FUNCTIONS ====================
 
 def get_openrouter_text_analysis(symbol, tf, signal, metrics):
     prompt = f"Symbol: {symbol}, Timeframe: {tf}, Signal: {signal}, Metrics: {metrics}. Give 4 concise bullet points on market bias and immediate execution plan."
-    try:
-        response = ai_client.chat.completions.create(
-            model="meta-llama/llama-3.3-70b-instruct:free",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"OpenRouter Text AI Error: {str(e)}"
+    
+    # Free models sequence (If 1st is rate limited, automatically tries next)
+    free_models = [
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "deepseek/deepseek-r1:free",
+        "qwen/qwen-2.5-72b-instruct:free"
+    ]
+    
+    for model_name in free_models:
+        try:
+            response = ai_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            continue
+            
+    return "⚠️ All free models are currently busy. Please click again after 15 seconds."
 
 def analyze_chart_with_openrouter_vision(image, symbol, tf):
     try:
@@ -216,7 +229,7 @@ def analyze_chart_with_openrouter_vision(image, symbol, tf):
 head_col, btn_col = st.columns([3, 1])
 with head_col:
     st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine</h1>', unsafe_allow_html=True)
-    st.caption(f"PKT: {get_pakistan_time()} | Manual Refresh Mode")
+    st.caption(f"PKT: {get_pakistan_time()} | Active Pair: {st.session_state.selected_symbol}")
 with btn_col:
     st.write("")
     if st.button("🔄 Refresh Data Now", use_container_width=True):
@@ -225,6 +238,7 @@ with btn_col:
 
 st.divider()
 
+# Pair Overview Cards
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
     with cols[idx % 3]:
@@ -234,64 +248,70 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
             anal = calculate_quant_signals(q_df)
             if anal:
                 p, q_sig, badge = anal["price"], anal["signal"], anal["badge_class"]
+        
+        # Highlight active card
+        is_active = (st.session_state.selected_symbol == disp)
+        border_style = "border: 2px solid #00f2fe;" if is_active else ""
+        
         st.markdown(f"""
-        <div class="symbol-card">
+        <div class="symbol-card" style="{border_style}">
             <strong>{meta['display']}</strong><br>
-            <span style="font-size:1.5rem; font-weight:700;">{p:,.2f}</span><br>
+            <span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br>
             <span class="signal-badge {badge}">{q_sig}</span>
         </div>
         """, unsafe_allow_html=True)
-        if st.button(f"Analyze {disp}", key=f"s_{disp}"):
+        if st.button(f"Select {disp}", key=f"s_{disp}"):
             st.session_state.selected_symbol = disp
             st.rerun()
 
-if st.session_state.selected_symbol:
-    sel = st.session_state.selected_symbol
-    meta = MAIN_SYMBOLS[sel]
-    st.divider()
-    st.subheader(f"🧠 Quantitative Deep Dive: {sel}")
+# Deep Dive Section (Always Remains Open)
+sel = st.session_state.selected_symbol
+meta = MAIN_SYMBOLS[sel]
+
+st.divider()
+st.subheader(f"🧠 Quantitative Deep Dive: {sel}")
+
+tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
+df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
+
+q_res = calculate_quant_signals(df)
+if q_res:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Live Price", f"{q_res['price']:,}")
+    c2.metric("Quantum Signal", q_res['signal'])
+    c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
+    c4.metric("Monte Carlo Bullish Prob.", f"{q_res['mc_bull_prob']}%")
     
-    tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
-    df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
+    ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
+    st.markdown(f"""
+    <div class="quant-box {ent_class}">
+        <h4>🔬 Shannon Market Noise Analysis:</h4>
+        <p>Market Entropy: <b>{q_res['entropy']}</b>. {'⚠️ High Chaos Detected: Technical signals paused.' if q_res['is_noisy'] else '✅ Clean Market Structure: Signal confidence is high.'}</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    q_res = calculate_quant_signals(df)
-    if q_res:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Live Price", f"{q_res['price']:,}")
-        c2.metric("Quantum Signal", q_res['signal'])
-        c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
-        c4.metric("Monte Carlo Bullish Prob.", f"{q_res['mc_bull_prob']}%")
+    st.markdown("### 🌀 Dynamic Time Warping (DTW) Sequence Forecast")
+    seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
+    if seq:
+        st.write(f"Matched Historical Pattern Shape Quality: **{seq['match_quality']}%**")
+        scols = st.columns(len(seq['sequence']))
+        for i, step in enumerate(seq['sequence']):
+            with scols[i]:
+                st.markdown(f"**Candle {i+1}**\n\n{step}")
+                
+    st.markdown("---")
+    st.markdown("### 🤖 OpenRouter AI Text Analysis")
+    if st.button("Generate Tactical Plan"):
+        metrics = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
+        with st.spinner("Generating Tactical Plan via OpenRouter..."):
+            st.info(get_openrouter_text_analysis(sel, tf, q_res['signal'], metrics))
         
-        ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
-        st.markdown(f"""
-        <div class="quant-box {ent_class}">
-            <h4>🔬 Shannon Market Noise Analysis:</h4>
-            <p>Market Entropy: <b>{q_res['entropy']}</b>. {'⚠️ High Chaos Detected: Technical signals paused.' if q_res['is_noisy'] else '✅ Clean Market Structure: Signal confidence is high.'}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("### 🌀 Dynamic Time Warping (DTW) Sequence Forecast")
-        seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
-        if seq:
-            st.write(f"Matched Historical Pattern Shape Quality: **{seq['match_quality']}%**")
-            scols = st.columns(len(seq['sequence']))
-            for i, step in enumerate(seq['sequence']):
-                with scols[i]:
-                    st.markdown(f"**Candle {i+1}**\n\n{step}")
-                    
-        st.markdown("---")
-        st.markdown("### 🤖 OpenRouter AI Text Analysis (Llama 3.3)")
-        if st.button("Generate Tactical Plan"):
-            metrics = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
-            with st.spinner("Calling OpenRouter..."):
-                st.info(get_openrouter_text_analysis(sel, tf, q_res['signal'], metrics))
-            
-        st.markdown("---")
-        st.markdown("### 📸 Gemini AI Vision Chart Analysis")
-        up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
-        if up_file:
-            img = Image.open(up_file)
-            st.image(img, use_container_width=True)
-            if st.button("Analyze Chart Image via Gemini"):
-                with st.spinner("Analyzing chart image with Gemini 2.0 via OpenRouter..."):
-                    st.success(analyze_chart_with_openrouter_vision(img, sel, tf))
+    st.markdown("---")
+    st.markdown("### 📸 Gemini AI Vision Chart Analysis")
+    up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
+    if up_file:
+        img = Image.open(up_file)
+        st.image(img, use_container_width=True)
+        if st.button("Analyze Chart Image via Gemini"):
+            with st.spinner("Analyzing chart image with Gemini 2.0 via OpenRouter..."):
+                st.success(analyze_chart_with_openrouter_vision(img, sel, tf))

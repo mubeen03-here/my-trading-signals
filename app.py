@@ -8,6 +8,7 @@ from openai import OpenAI
 from PIL import Image
 import base64
 import io
+import requests
 
 # Page Setup
 st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
@@ -168,16 +169,60 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     quality = round(max(0, 100 - (avg_dist * 4)), 1)
     return {"sequence": sequence, "match_quality": quality}
 
-# ==================== MULTI-API AI ROUTING ====================
+# ==================== NATIVE GOOGLE GEMINI VISION ENGINE ====================
+
+def analyze_chart_vision_native_google(image, symbol, tf):
+    gemini_key = st.secrets.get("GEMINI_API_KEY")
+    if not gemini_key:
+        return "⚠️ Please add GEMINI_API_KEY in Streamlit Secrets."
+        
+    buffered = io.BytesIO()
+    image.save(buffered, format="PNG")
+    img_b64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
+    
+    # Official Direct Native Google API Endpoint
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "image/png",
+                        "data": img_b64
+                    }
+                }
+            ]
+        }]
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        res_json = response.json()
+        
+        if response.status_code == 200:
+            text_out = res_json['candidates'][0]['content']['parts'][0]['text']
+            return f"⚡ **Original Native Gemini Vision Result:**\n\n{text_out}"
+        else:
+            err_msg = res_json.get('error', {}).get('message', str(res_json))
+            return f"❌ Gemini Native API Error: {err_msg}"
+    except Exception as e:
+        return f"❌ Connection Error: {str(e)}"
+
+# ==================== MULTI-AI TEXT ROUTING ====================
 
 def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
     prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict NEXT immediate candle (Green/Red) with a 1-sentence reason."
     
     try:
         if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
-            g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=st.secrets["GEMINI_API_KEY"])
-            res = g_client.chat.completions.create(model="gemini-2.0-flash", messages=[{"role": "user", "content": prompt}], timeout=10)
-            return True, res.choices[0].message.content.strip()
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={st.secrets['GEMINI_API_KEY']}"
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            res = requests.post(url, json=payload, timeout=10).json()
+            return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
             
         elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):
             groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=st.secrets["GROQ_API_KEY"])
@@ -198,49 +243,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
             return False, "API Key Missing in Secrets"
     except Exception as e:
         return False, f"Server Busy ({str(e)[:35]}...)"
-
-def analyze_chart_vision_direct(image, symbol, tf):
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    
-    prompt = f"Analyze chart for {symbol} ({tf}). Predict NEXT candle (Bullish Green or Bearish Red) with a brief 2-line price action reason."
-
-    # 1. Primary: Direct Google Official Gemini API
-    gemini_key = st.secrets.get("GEMINI_API_KEY")
-    if gemini_key:
-        try:
-            g_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key)
-            res = g_client.chat.completions.create(
-                model="gemini-2.0-flash",
-                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
-                timeout=12
-            )
-            return "⚡ **Direct Gemini API Result:**\n\n" + res.choices[0].message.content.strip()
-        except Exception:
-            pass
-
-    # 2. Fallback: OpenRouter Working Vision Endpoints
-    or_key = st.secrets.get("OPENROUTER_API_KEY")
-    if or_key:
-        or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
-        vision_models = [
-            "google/gemini-2.0-flash-001",
-            "meta-llama/llama-3.2-11b-vision-instruct:free",
-            "qwen/qwen-2-vl-7b-instruct:free"
-        ]
-        for model_name in vision_models:
-            try:
-                res = or_client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_str}"}}]}],
-                    timeout=15
-                )
-                return f"🌐 **OpenRouter Vision ({model_name.split('/')[-1]}):**\n\n" + res.choices[0].message.content.strip()
-            except Exception:
-                continue
-
-    return "❌ Vision endpoints are currently busy. Please try again in a few seconds."
 
 # ==================== STREAMLIT UI ====================
 
@@ -346,12 +348,11 @@ if q_res:
                         st.error(f"**{model_name}**\n\n{res}")
 
     st.divider()
-    st.subheader("📸 Gemini Direct Chart Screenshot Analyzer")
+    st.subheader("📸 Gemini Native Vision Chart Analyzer")
     up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
     if up_file:
         img = Image.open(up_file)
         st.image(img, use_container_width=True)
-        if st.button("Predict Next Candle via Vision AI"):
-            with st.spinner("Analyzing chart image..."):
-                st.info(analyze_chart_vision_direct(img, sel, tf))
-        
+        if st.button("Predict Next Candle via Native Gemini"):
+            with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
+                st.info(analyze_chart_vision_native_google(img, sel, tf))

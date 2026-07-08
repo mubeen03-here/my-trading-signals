@@ -276,35 +276,16 @@ def render_confluence_hub_section(df_data, symbol_name, current_tf):
     
     with col1:
         color_st = "#00c853" if "BULLISH" in st_sig else "#c62828"
-        st.markdown(f"""
-        <div class="ind-card">
-            <h4>1. Supertrend Indicator</h4>
-            <h3 style="color:{color_st};">{st_sig}</h3>
-            <p>ATR Period: 10 | Multiplier: 3.0</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="ind-card"><h4>1. Supertrend Indicator</h4><h3 style="color:{color_st};">{st_sig}</h3><p>ATR Period: 10 | Multiplier: 3.0</p></div>', unsafe_allow_html=True)
         
     with col2:
         color_ut = "#00c853" if "BUY" in ut_sig else "#c62828"
-        st.markdown(f"""
-        <div class="ind-card">
-            <h4>2. UT Bot Alerts</h4>
-            <h3 style="color:{color_ut};">{ut_sig}</h3>
-            <p>Key Value: 1 | ATR Period: 10</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="ind-card"><h4>2. UT Bot Alerts</h4><h3 style="color:{color_ut};">{ut_sig}</h3><p>Key Value: 1 | ATR Period: 10</p></div>', unsafe_allow_html=True)
         
     with col3:
         color_ms = "#00c853" if "BULLISH" in ms_sig else ("#c62828" if "BEARISH" in ms_sig else "#ff9800")
-        st.markdown(f"""
-        <div class="ind-card">
-            <h4>3. LuxAlgo Market Structure</h4>
-            <h3 style="color:{color_ms};">{ms_sig}</h3>
-            <p>Fractal Length: 5 (BOS/CHoCH)</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="ind-card"><h4>3. LuxAlgo Market Structure</h4><h3 style="color:{color_ms};">{ms_sig}</h3><p>Fractal Length: 5 (BOS/CHoCH)</p></div>', unsafe_allow_html=True)
         
-    # Confluence Signal Aggregation
     bull_count = sum(1 for s in [st_sig, ut_sig, ms_sig] if "BULLISH" in s or "BUY" in s)
     bear_count = sum(1 for s in [st_sig, ut_sig, ms_sig] if "BEARISH" in s or "SELL" in s)
     
@@ -319,12 +300,7 @@ def render_confluence_hub_section(df_data, symbol_name, current_tf):
         final_conf = "⚠️ MIXED SIGNALS / WAIT"
         conf_badge = "neutral"
         
-    st.markdown(f"""
-    <div style="text-align:center; padding: 1rem; background-color:#161b22; border-radius:12px; margin-top:10px;">
-        <h2>Aggregated Signal: <span class="signal-badge {conf_badge}" style="font-size:1.3rem;">{final_conf}</span></h2>
-        <p style="color:#8b949e; margin-top:5px;">Confluence Score: {bull_count}/3 Bullish | {bear_count}/3 Bearish</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding: 1rem; background-color:#161b22; border-radius:12px; margin-top:10px;"><h2>Aggregated Signal: <span class="signal-badge {conf_badge}" style="font-size:1.3rem;">{final_conf}</span></h2><p style="color:#8b949e; margin-top:5px;">Confluence Score: {bull_count}/3 Bullish | {bear_count}/3 Bearish</p></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==================== NATIVE GOOGLE GEMINI VISION ENGINE ====================
@@ -349,7 +325,7 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash"]
+    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
     last_error = ""
     
     for model_name in candidate_models:
@@ -374,7 +350,7 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
     
     try:
         if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
-            candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash-latest"]
+            candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash"]
             for model_name in candidate_models:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={st.secrets['GEMINI_API_KEY']}"
                 payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -434,13 +410,8 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
         is_active = (st.session_state.selected_symbol == disp)
         border_style = "border: 2px solid #00f2fe; background-color: #1c2333;" if is_active else ""
         
-        st.markdown(f"""
-        <div class="symbol-card" style="{border_style}">
-            <strong>{meta['display']}</strong><br>
-            <span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br>
-            <span class="signal-badge {badge}">{q_sig}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        card_html = f'<div class="symbol-card" style="{border_style}"><strong>{meta["display"]}</strong><br><span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br><span class="signal-badge {badge}">{q_sig}</span></div>'
+        st.markdown(card_html, unsafe_allow_html=True)
         if st.button(f"Focus {disp}", key=f"s_{disp}"):
             st.session_state.selected_symbol = disp
             st.rerun()
@@ -463,12 +434,16 @@ if q_res:
     c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
     c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
     
-    # CENTER MARKET STRUCTURE STATUS BOX
     ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
-    st.markdown(f"""
-    <div class="quant-box {ent_class}">
-        <h4>🔬 Quant Market Structure Status:</h4>
-        <p>Market Noise Entropy: <b>{q_res['entropy']}</b> | Trend Score: <b>{q_res['score']}</b><br>
-        {'⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop. Trade next candles with extra caution.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Low noise chaos detected. Signal reliability is high.'}</p>
-    </div>
- 
+    noise_msg = '⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop. Trade next candles with extra caution.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Low noise chaos detected. Signal reliability is high.'
+    
+    box_html = f'<div class="quant-box {ent_class}"><h4>🔬 Quant Market Structure Status:</h4><p>Market Noise Entropy: <b>{q_res["entropy"]}</b> | Trend Score: <b>{q_res["score"]}</b><br>{noise_msg}</p></div>'
+    st.markdown(box_html, unsafe_allow_html=True)
+    
+    st.markdown("### 🌀 DTW 6-Candle Sequence Prediction")
+    seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
+    if seq:
+        st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
+        scols = st.columns(len(seq['sequence']))
+        for i, step in enumerate(seq['sequence']):
+            with scol

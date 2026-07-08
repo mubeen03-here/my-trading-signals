@@ -7,7 +7,11 @@ import pytz
 from groq import Groq
 
 # ==================== GROQ SETUP ====================
-groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+if "GROQ_API_KEY" in st.secrets:
+    groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+else:
+    st.error("GROQ_API_KEY is missing in Streamlit Secrets!")
+    st.stop()
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
@@ -50,13 +54,20 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty: return None
+        
+        # Safe MultiIndex Columns Flattening
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] for col in df.columns]
+            
         df = df.reset_index()
-        df.columns = [str(c[0]).capitalize() if isinstance(c, tuple) else str(c).capitalize() for c in df.columns]
+        df.columns = [str(c).capitalize() for c in df.columns]
+        
         rename_map = {}
         for col in df.columns:
             if "datetime" in col.lower() or "date" in col.lower(): rename_map[col] = "Datetime"
             elif col.lower() in ["close", "open", "high", "low"]: rename_map[col] = col.capitalize()
         df = df.rename(columns=rename_map)
+        
         if "Close" not in df.columns: return None
         return df[["Datetime", "Open", "High", "Low", "Close"]].dropna()
     except:
@@ -65,16 +76,39 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
 def calculate_technical_signal(df):
     if df is None or len(df) < 40: return None
     df = df.copy()
-    close = df['Close']
     
+    # Ensure values are strictly numeric and 1D
+    close = df['Close'].astype(float)
+    high = df['High'].astype(float)
+    low = df['Low'].astype(float)
+    
+    # Indicators
     df['EMA_9'] = close.ewm(span=9, adjust=False).mean()
     df['EMA_21'] = close.ewm(span=21, adjust=False).mean()
-    df['RSI'] = 100 - (100 / (1 + (close.diff().where(close.diff() > 0, 0).rolling(14).mean() / 
-                           close.diff().where(close.diff() < 0, 0).rolling(14).mean().abs())))
+    
+    # Robust RSI Calculation (No Division by Zero)
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df['RSI'] = 100 - (100 / (1 + rs))
+    df['RSI'] = df['RSI'].fillna(50) # Fallback if perfectly flat
+    
+    # MACD
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = macd_hist
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = macd_line - signal_line
+    
+    # Real ATR Calculation
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(window=14).mean()
     
     df = df.dropna()
     if len(df) < 15: return None
@@ -113,7 +147,7 @@ def calculate_technical_signal(df):
     
     return {
         "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
-        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": 0,
+        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2),
         "expected_candles": expected, "pullback": pullback
     }
 
@@ -167,7 +201,7 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
     with col:
         quick_df = fetch_ohlcv(meta["yf_ticker"], interval="60m", period="2d")
-        price, pct, sig, badge = 0, 0, "NEUTRAL", "neutral"
+        price, pct, sig, badge = 0.0, 0.0, "NEUTRAL", "neutral"
         if quick_df is not None and len(quick_df) > 1:
             price = float(quick_df['Close'].iloc[-1])
             pct = ((price - float(quick_df['Close'].iloc[0])) / float(quick_df['Close'].iloc[0])) * 100
@@ -203,10 +237,10 @@ if st.session_state.selected_symbol:
     
     if analysis:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Price", analysis['last_price'])
+        c1.metric("Price", f"{analysis['last_price']:,}")
         c2.metric("Technical Signal", analysis['signal'])
         c3.metric("RSI", analysis['rsi'])
-        c4.metric("ATR", analysis['atr'])
+        c4.metric("ATR (14)", analysis['atr'])
         
         if analysis['signal'] == "WAIT":
             st.markdown(f"""
@@ -217,7 +251,7 @@ if st.session_state.selected_symbol:
             """, unsafe_allow_html=True)
         else:
             st.markdown("### 🎯 Trade Setup")
-            st.code(f"Entry around: {analysis['last_price']}\nUse ATR for SL & TP")
+            st.code(f"Entry around: {analysis['last_price']}\nUse ATR ({analysis['atr']}) for SL & TP placement.")
         
         # Current Candle
         current = get_current_candle_status(df)
@@ -241,7 +275,7 @@ if st.session_state.selected_symbol:
         
         if st.button("🔍 Analyze with Grok", key="grok_btn"):
             with st.spinner("Getting Grok's analysis..."):
-                recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
+                recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}, ATR: {analysis['atr']}"
                 grok_response = get_grok_analysis(
                     selected, tf, analysis['signal'], recent
                 )
@@ -272,6 +306,7 @@ if st.session_state.selected_symbol:
         
         st.caption("Grok analysis runs only when you click the button above.")
     else:
-        st.error("Not enough data for this timeframe.")
+        st.error("Not enough data for this timeframe. Try a larger timeframe or wait for market updates.")
 
 st.caption("Technical + Grok Analysis • Free Tier • Gemini Image Analysis Coming Soon")
+    

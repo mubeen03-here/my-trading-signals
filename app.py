@@ -7,6 +7,7 @@ import pytz
 from groq import Groq
 import google.generativeai as genai
 from PIL import Image
+import math
 
 # ==================== API KEYS SETUP ====================
 if "GROQ_API_KEY" in st.secrets:
@@ -17,29 +18,26 @@ else:
 
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-else:
-    st.warning("⚠️ GEMINI_API_KEY missing in Secrets! Chart Image Analysis won't work until added.")
 
-st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #fafafa; }
-    .main-header { font-size: 2.2rem; font-weight: 700; background: linear-gradient(90deg, #00ff9f, #00b8ff);
+    .stApp { background-color: #0b0e14; color: #e6edf3; }
+    .main-header { font-size: 2.4rem; font-weight: 800; background: linear-gradient(90deg, #00f2fe, #4facfe);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
-    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 14px; padding: 1rem; margin-bottom: 1rem; }
-    .signal-badge { padding: 0.3rem 0.9rem; border-radius: 20px; font-weight: 700; font-size: 0.9rem; display: inline-block; }
+    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; }
+    .signal-badge { padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 700; font-size: 0.85rem; display: inline-block; }
     .strong-buy { background-color: #00c853; color: white; }
-    .buy { background-color: #4caf50; color: white; }
+    .buy { background-color: #2e7d32; color: white; }
     .neutral { background-color: #ff9800; color: white; }
-    .sell { background-color: #f44336; color: white; }
+    .sell { background-color: #c62828; color: white; }
     .strong-sell { background-color: #d32f2f; color: white; }
-    .metric-value { font-size: 1.7rem; font-weight: 700; }
-    .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
+    .quant-box { background-color: #131924; border: 1px solid #1f6feb; border-radius: 12px; padding: 1.2rem; margin: 1rem 0; }
+    .entropy-high { border-left: 5px solid #f44336; }
+    .entropy-low { border-left: 5px solid #00c853; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
     .gemini-box { background-color: #1c2833; border: 1px solid #00ff9f; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
-    .sequence-box { background-color: #191923; border: 1px solid #ff007f; border-radius: 12px; padding: 1.2rem; margin-top: 1rem; }
-    .current-candle-box { background-color: #1f2a3d; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,17 +52,15 @@ MAIN_SYMBOLS = {
 
 def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
-    return datetime.now(tz).strftime("%d %b %Y  |  %I:%M:%S %p PKT")
+    return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-@st.cache_data(ttl=40, show_spinner=False)
-def fetch_ohlcv(ticker, interval="15m", period="5d"):
+@st.cache_data(ttl=35, show_spinner=False)
+def fetch_ohlcv(ticker, interval="15m", period="30d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty: return None
-        
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] for col in df.columns]
-            
         df = df.reset_index()
         df.columns = [str(c).capitalize() for c in df.columns]
         
@@ -73,350 +69,228 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
             if "datetime" in col.lower() or "date" in col.lower(): rename_map[col] = "Datetime"
             elif col.lower() in ["close", "open", "high", "low"]: rename_map[col] = col.capitalize()
         df = df.rename(columns=rename_map)
-        
-        if "Close" not in df.columns: return None
         return df[["Datetime", "Open", "High", "Low", "Close"]].dropna()
     except:
         return None
 
-def calculate_technical_signal(df):
-    if df is None or len(df) < 40: return None
+# ==================== QUANT MATHEMATICAL MODELS ====================
+
+def calculate_shannon_entropy(series, bins=10):
+    """Calculates Market Noise (Entropy). High Entropy = Chaos/No Trade."""
+    returns = np.diff(np.log(series))
+    hist, _ = np.histogram(returns, bins=bins)
+    prob = hist / float(np.sum(hist))
+    prob = prob[prob > 0]
+    entropy = -np.sum(prob * np.log2(prob))
+    max_entropy = np.log2(bins)
+    normalized_entropy = entropy / max_entropy
+    return round(normalized_entropy, 3)
+
+def fast_dtw_distance(s1, s2):
+    """Dynamic Time Warping: Non-linear pattern similarity matching."""
+    n, m = len(s1), len(s2)
+    dtw_matrix = np.full((n + 1, m + 1), fill_value=np.inf)
+    dtw_matrix[0, 0] = 0
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost = abs(s1[i - 1] - s2[j - 1])
+            dtw_matrix[i, j] = cost + min(dtw_matrix[i - 1, j], dtw_matrix[i, j - 1], dtw_matrix[i - 1, j - 1])
+    return dtw_matrix[n, m]
+
+def monte_carlo_simulation(last_price, returns_std, num_sims=300, steps=5):
+    """Simulates 300 price trajectories to compute win probability."""
+    sims = np.zeros((num_sims, steps))
+    for i in range(num_sims):
+        path = [last_price]
+        for s in range(steps - 1):
+            shock = np.random.normal(0, returns_std)
+            path.append(path[-1] * (1 + shock))
+        sims[i] = path
+    bullish_paths = np.sum(sims[:, -1] > last_price)
+    win_rate = (bullish_paths / num_sims) * 100
+    return round(win_rate, 1)
+
+def calculate_quant_signals(df):
+    if df is None or len(df) < 50: return None
     df = df.copy()
+    close = df['Close'].astype(float).values
     
-    close = df['Close'].astype(float)
-    high = df['High'].astype(float)
-    low = df['Low'].astype(float)
+    # 1. Entropy Check (Noise Detection)
+    entropy_score = calculate_shannon_entropy(close[-40:])
     
-    df['EMA_9'] = close.ewm(span=9, adjust=False).mean()
-    df['EMA_21'] = close.ewm(span=21, adjust=False).mean()
+    # 2. Return volatility
+    log_returns = np.diff(np.log(close[-50:]))
+    volatility = np.std(log_returns)
     
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    df['RSI'] = 100 - (100 / (1 + rs))
-    df['RSI'] = df['RSI'].fillna(50)
+    # 3. Monte Carlo Win Rate
+    monte_carlo_bull_prob = monte_carlo_simulation(close[-1], volatility, num_sims=400, steps=5)
     
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = macd_line - signal_line
-    
-    tr1 = high - low
-    tr2 = (high - close.shift()).abs()
-    tr3 = (low - close.shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df['ATR'] = tr.rolling(window=14).mean()
-    
-    df = df.dropna()
-    if len(df) < 15: return None
+    # Technical Indicators
+    df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+    df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
     
     last = df.iloc[-1]
     price = float(last['Close'])
+    
+    # Base Signal
     score = 0
-    reasons = []
+    if price > last['EMA_9'] > last['EMA_21']: score += 2
+    elif price < last['EMA_9'] < last['EMA_21']: score -= 2
     
-    if price > last['EMA_9'] > last['EMA_21']: score += 2; reasons.append("✅ Bullish structure")
-    elif price > last['EMA_9']: score += 1; reasons.append("✅ Above EMA9")
-    elif price < last['EMA_9'] < last['EMA_21']: score -= 2; reasons.append("❌ Bearish structure")
+    if monte_carlo_bull_prob > 58: score += 2
+    elif monte_carlo_bull_prob < 42: score -= 2
     
-    rsi = float(last['RSI'])
-    if rsi > 58: score += 1; reasons.append("✅ RSI bullish")
-    elif rsi < 42: score -= 1; reasons.append("❌ RSI bearish")
-    
-    if last['MACD_Hist'] > 0: score += 1; reasons.append("✅ MACD positive")
-    else: score -= 1; reasons.append("❌ MACD negative")
-    
-    if score >= 4: signal, badge = "STRONG BUY", "strong-buy"
-    elif score >= 2: signal, badge = "BUY", "buy"
-    elif score <= -4: signal, badge = "STRONG SELL", "strong-sell"
-    elif score <= -2: signal, badge = "SELL", "sell"
+    if score >= 3: signal, badge = "STRONG BUY", "strong-buy"
+    elif score >= 1: signal, badge = "BUY", "buy"
+    elif score <= -3: signal, badge = "STRONG SELL", "strong-sell"
+    elif score <= -1: signal, badge = "SELL", "sell"
     else: signal, badge = "WAIT", "neutral"
     
-    if "BUY" in signal:
-        expected = "Next candle likely bullish (green)"
-        pullback = "Possible small red pullback then continuation"
-    elif "SELL" in signal:
-        expected = "Next candle likely bearish (red)"
-        pullback = "Possible small green pullback then continuation"
-    else:
-        expected = "Next candle direction unclear - better to wait"
-        pullback = ""
-    
+    # Override signal if Market Entropy (Noise) is extremely high
+    is_noisy = entropy_score > 0.88
+    if is_noisy:
+        signal = "WAIT (High Noise)"
+        badge = "neutral"
+        
     return {
-        "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
-        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2),
-        "expected_candles": expected, "pullback": pullback
+        "signal": signal, "badge_class": badge, "score": score, "price": round(price, 2),
+        "entropy": entropy_score, "is_noisy": is_noisy, "mc_bull_prob": monte_carlo_bull_prob
     }
 
-def get_current_candle_status(df):
-    if df is None or len(df) < 2: return None
-    last = df.iloc[-1]
-    last_color = "🟢 Green" if last['Close'] > last['Open'] else "🔴 Red"
-    forming = "🟢 Bullish forming" if last['Close'] > last['Open'] else "🔴 Bearish forming"
-    return {"last_closed": last_color, "forming_now": forming}
+def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
+    if df is None or len(df) < 200: return None
+    
+    close = df['Close'].astype(float).values
+    open_p = df['Open'].astype(float).values
+    
+    # Normalize current pattern shape
+    curr = (close[-pattern_len:] - open_p[-pattern_len:])
+    curr_norm = (curr - np.mean(curr)) / (np.std(curr) + 1e-8)
+    
+    best_dist = float('inf')
+    best_idx = -1
+    
+    search_range = min(800, len(df) - pattern_len - predict_len - 2)
+    for idx in range(len(df) - search_range - pattern_len - predict_len, len(df) - pattern_len - predict_len):
+        hist = (close[idx:idx+pattern_len] - open_p[idx:idx+pattern_len])
+        hist_norm = (hist - np.mean(hist)) / (np.std(hist) + 1e-8)
+        
+        dist = fast_dtw_distance(curr_norm, hist_norm)
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+            
+    if best_idx == -1: return None
+    
+    sequence = []
+    g_count, r_count = 0, 0
+    for k in range(predict_len):
+        f_idx = best_idx + pattern_len + k
+        if f_idx < len(df):
+            if close[f_idx] >= open_p[f_idx]:
+                sequence.append("🟢 Green")
+                g_count += 1
+            else:
+                sequence.append("🔴 Red")
+                r_count += 1
+                
+    return {"sequence": sequence, "green": g_count, "red": r_count, "match_quality": round(100 - (best_dist * 5), 1)}
 
-def get_grok_analysis(symbol, tf, technical_signal, recent_data):
-    prompt = f"""
-You are a professional price action trader.
-Symbol: {symbol}
-Timeframe: {tf}
-Current Price: {recent_data}
-Technical Signal: {technical_signal}
-
-Give your independent analysis:
-1. What is happening right now?
-2. Probability that the NEXT candle will be bullish or bearish?
-3. Why do you think so? (Give clear reason)
-4. Should we take the trade or Wait? Why?
-
-Be honest and critical. Max 6-7 lines.
-"""
+def get_grok_analysis(symbol, tf, signal, metrics):
+    prompt = f"Symbol: {symbol}, TF: {tf}, Signal: {signal}, Quant Metrics: {metrics}. Provide a direct 5-line market execution plan."
     try:
-        response = groq_client.chat.completions.create(
+        res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-            max_tokens=220
+            temperature=0.4, max_tokens=200
         )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Analysis failed: {str(e)}"
+        return res.choices[0].message.content.strip()
+    except Exception as e: return f"Grok Error: {str(e)}"
 
 def analyze_chart_with_gemini(image, symbol, tf):
-    if "GEMINI_API_KEY" not in st.secrets:
-        return "GEMINI_API_KEY is not configured in Streamlit Secrets."
-        
-    prompt = f"""
-You are an elite price action trader and candlestick patterns expert.
-Analyze this chart screenshot for {symbol} on the {tf} timeframe.
+    if "GEMINI_API_KEY" not in st.secrets: return "Gemini Key Missing"
+    prompt = f"Analyze this chart image for {symbol} ({tf}). Predict next candle direction (Bullish/Bearish) with clear reasoning."
+    try:
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        res = model.generate_content([prompt, image])
+        return res.text
+    except Exception as e: return f"Gemini Error: {str(e)}"
 
-Analyze:
-1. **Current Forming Candle:** Look at the live/present forming candle (wicks, body, momentum).
-2. **Key Price Action:** Support/Resistance levels, trendlines, or active chart patterns.
-3. **NEXT Candle Prediction:** Predict the direction of the upcoming NEXT candle (Bullish Green 🟢 or Bearish Red 🔴) with estimated probability (%).
-4. **Actionable Signal:** BUY, SELL, or WAIT with exact reasons based on the chart image.
-
-Keep your answer clear, direct, professional, and limited to 6-8 bullet points.
-"""
-    model_candidates = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash']
-    last_error = None
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content([prompt, image])
-            if response and response.text: return response.text
-        except Exception as e:
-            last_error = e
-            continue
-    return f"Gemini Image Analysis failed: {str(last_error)}"
-
-# ==================== NEW FEATURE: INDEPENDENT CANDLE SEQUENCE PREDICTOR ====================
-def predict_candle_sequence_blueprint(df, pattern_len=10, predict_len=8):
-    """Scans 1000 historical candles independently to map the exact upcoming candle sequence"""
-    if df is None or len(df) < 150:
-        return None
-        
-    # Take safe depth up to 1000 candles
-    search_depth = min(1000, len(df) - pattern_len - predict_len - 5)
-    
-    # Extract current active pattern body dynamics
-    current_pattern = []
-    for i in range(pattern_len):
-        idx = len(df) - pattern_len + i
-        current_pattern.append(float(df.iloc[idx]['Close'] - df.iloc[idx]['Open']))
-        
-    best_match_idx = -1
-    min_dist = float('inf')
-    
-    # 1000 Candle Historical Scan
-    start_loop = len(df) - search_depth - pattern_len - predict_len
-    end_loop = len(df) - pattern_len - predict_len
-    
-    for start_idx in range(max(0, start_loop), end_loop):
-        dist = 0.0
-        for i in range(pattern_len):
-            hist_diff = float(df.iloc[start_idx + i]['Close'] - df.iloc[start_idx + i]['Open'])
-            dist += (current_pattern[i] - hist_diff) ** 2
-        if dist < min_dist:
-            min_dist = dist
-            best_match_idx = start_idx
-            
-    if best_match_idx == -1:
-        return None
-        
-    # Map the exact outcome sequence that followed that historical match
-    sequence_list = []
-    green_count = 0
-    red_count = 0
-    
-    for k in range(predict_len):
-        future_idx = best_match_idx + pattern_len + k
-        if future_idx < len(df):
-            f_close = df.iloc[future_idx]['Close']
-            f_open = df.iloc[future_idx]['Open']
-            if f_close >= f_open:
-                sequence_list.append("🟢 Green (Buy)")
-                green_count += 1
-            else:
-                sequence_list.append("🔴 Red (Sell)")
-                red_count += 1
-                
-    return {
-        "sequence": sequence_list,
-        "green_total": green_count,
-        "red_total": red_count,
-        "total_predicted": len(sequence_list)
-    }
-
-# ==================== UI ====================
-st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Grok + Gemini Vision Analysis")
-
-if st.button("🔄 Refresh All Data"):
-    st.cache_data.clear()
-    st.rerun()
+# ==================== STREAMLIT UI ====================
+st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine</h1>', unsafe_allow_html=True)
+st.caption(f"PKT: {get_pakistan_time()} | Entropy + DTW Non-Linear Fractals + Monte Carlo")
 
 cols = st.columns(3)
-for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
-    col = cols[idx % 3]
-    with col:
-        quick_df = fetch_ohlcv(meta["yf_ticker"], interval="60m", period="2d")
-        price, pct, sig, badge = 0.0, 0.0, "NEUTRAL", "neutral"
-        if quick_df is not None and len(quick_df) > 1:
-            price = float(quick_df['Close'].iloc[-1])
-            pct = ((price - float(quick_df['Close'].iloc[0])) / float(quick_df['Close'].iloc[0])) * 100
-            anal = calculate_technical_signal(quick_df)
-            if anal: 
-                sig = anal["signal"]
+for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
+    with cols[idx % 3]:
+        q_df = fetch_ohlcv(meta["yf_ticker"], interval="60m", period="5d")
+        p, q_sig, badge = 0.0, "WAIT", "neutral"
+        if q_df is not None:
+            anal = calculate_quant_signals(q_df)
+            if anal:
+                p = anal["price"]
+                q_sig = anal["signal"]
                 badge = anal["badge_class"]
-        
         st.markdown(f"""
         <div class="symbol-card">
             <strong>{meta['display']}</strong><br>
-            <span class="metric-value">{price:,.2f}</span>
-            <span style="color:{'#00c853' if pct >= 0 else '#f44336'};"> {pct:+.2f}%</span><br>
-            <span class="signal-badge {badge}">{sig}</span>
+            <span style="font-size:1.5rem; font-weight:700;">{p:,.2f}</span><br>
+            <span class="signal-badge {badge}">{q_sig}</span>
         </div>
         """, unsafe_allow_html=True)
-        
-        if st.button(f"View Analysis", key=f"btn_{disp_name}"):
-            st.session_state.selected_symbol = disp_name
+        if st.button(f"Analyze {disp}", key=f"s_{disp}"):
+            st.session_state.selected_symbol = disp
             st.rerun()
 
 if st.session_state.selected_symbol:
-    selected = st.session_state.selected_symbol
-    meta = MAIN_SYMBOLS[selected]
+    sel = st.session_state.selected_symbol
+    meta = MAIN_SYMBOLS[sel]
     st.divider()
-    st.subheader(f"📊 {selected}")
+    st.subheader(f"🧠 Quantitative Deep Dive: {sel}")
     
-    tf = st.selectbox("Timeframe", ["5m", "15m", "30m", "1h", "4h"], index=2)
-    
-    # Fetching 30 days of data to guarantee 1000+ candles for the sequence generator
+    tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
     df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
-    analysis = calculate_technical_signal(df)
     
-    if analysis:
+    q_res = calculate_quant_signals(df)
+    if q_res:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Price", f"{analysis['last_price']:,}")
-        c2.metric("Technical Signal", analysis['signal'])
-        c3.metric("RSI", analysis['rsi'])
-        c4.metric("ATR (14)", analysis['atr'])
+        c1.metric("Live Price", f"{q_res['price']:,}")
+        c2.metric("Quantum Signal", q_res['signal'])
+        c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
+        c4.metric("Monte Carlo Bullish Prob.", f"{q_res['mc_bull_prob']}%")
         
-        if analysis['signal'] == "WAIT":
-            st.markdown(f"""
-            <div class="wait-box">
-            <h3>⏳ WAIT - No Clear Setup</h3>
-            <p>Technical confluence is low. Better to wait for clear structure.</p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("### 🎯 Trade Setup")
-            st.code(f"Entry around: {analysis['last_price']}\nUse ATR ({analysis['atr']}) for SL & TP placement.")
+        # Entropy Warning
+        ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
+        st.markdown(f"""
+        <div class="quant-box {ent_class}">
+            <h4>🔬 Shannon Market Noise Analysis:</h4>
+            <p>Market Entropy is <b>{q_res['entropy']}</b>. {'⚠️ High Chaos Detected: Technical signals disabled to prevent fakeouts.' if q_res['is_noisy'] else '✅ Clean Market Structure: Signal confidence is high.'}</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        current = get_current_candle_status(df)
-        if current:
-            st.markdown("### 📍 Current Market Candle (Real-time)")
-            st.markdown(f"""
-            <div class="current-candle-box">
-            <b>Last Closed:</b> {current['last_closed']}<br>
-            <b>Currently Forming:</b> {current['forming_now']}
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.markdown("### 🕯️ Next Candle Expectation (Technical)")
-        st.info(analysis['expected_candles'])
-        if analysis.get('pullback'):
-            st.warning(analysis['pullback'])
-            
-        # ==================== NEW UI BLOCK: FRACTAL SEQUENCE PREDICTOR ====================
+        # DTW Sequence Predictor
+        st.markdown("### 🌀 Dynamic Time Warping (DTW) Sequence Forecast")
+        seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
+        if seq:
+            st.write(f"Matched Historical Pattern Shape Quality: **{seq['match_quality']}%**")
+            scols = st.columns(len(seq['sequence']))
+            for i, step in enumerate(seq['sequence']):
+                with scols[i]:
+                    st.markdown(f"**Candle {i+1}**\n\n{step}")
+                    
+        # Grok & Gemini
         st.markdown("---")
-        st.markdown("### 🔮 AI Smart Sequence Blueprint (Next 8 Candles Forecast)")
-        st.write("Yeh engine independentally pichhli 1000 candles ka data check karke agali candles ka poora roadmap print karta hai.")
-        
-        seq_data = predict_candle_sequence_blueprint(df, pattern_len=10, predict_len=8)
-        if seq_data:
-            st.markdown(f"""
-            <div class="sequence-box">
-                <h4>📊 Historical Similarity Outcome:</h4>
-                <p>Maujuda market structure se milte julte pichhle 1000 bars ke data ke mutabiq agla sequence yeh ho sakta hai:</p>
-                <h5><b>Total Predicted Directions:</b></h5>
-                <ul>
-                    <li>🟢 Total Bullish (Green) Candles: <b>{seq_data['green_total']}</b></li>
-                    <li>🔴 Total Bearish (Red) Candles: <b>{seq_data['red_total']}</b></li>
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
+        st.markdown("### 🤖 Grok AI Strategic Execution")
+        if st.button("Generate Grok Tactical Plan"):
+            metrics = f"Entropy: {q_res['entropy']}, MC Prob: {q_res['mc_bull_prob']}%"
+            st.info(get_grok_analysis(sel, tf, q_res['signal'], metrics))
             
-            # Displaying individual step-by-step candle blueprint
-            st.markdown("##### 🗺️ Step-by-Step Upcoming Candles Pattern:")
-            steps_cols = st.columns(seq_data['total_predicted'])
-            for i, step_text in enumerate(seq_data['sequence']):
-                with steps_cols[i]:
-                    st.markdown(f"**Candle {i+1}**\n\n{step_text}")
-        else:
-            st.info("Historical data scanning under process or insufficient bars for this timeframe.")
-        
         st.markdown("---")
-        st.markdown("### 🤖 Grok Text Analysis")
-        if st.button("🔍 Analyze Text with Grok", key="grok_btn"):
-            with st.spinner("Getting Grok's analysis..."):
-                recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}, ATR: {analysis['atr']}"
-                grok_response = get_grok_analysis(selected, tf, analysis['signal'], recent)
-            st.markdown(f"""
-            <div class="ai-box">
-            {grok_response}
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown("### 📸 Gemini AI Chart Screenshot Analysis (Next Candle Predictor)")
-        st.write("Current chalne wali candle ki photo upload karein taake Gemini next candle predict kare.")
-        
-        uploaded_file = st.file_uploader(f"Upload {selected} ({tf}) Chart Image", type=["png", "jpg", "jpeg"], key="image_uploader")
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file)
-            st.image(image, caption=f"Uploaded Chart Screenshot ({tf})", use_container_width=True)
-            
-            if st.button("🔮 Predict Next Candle with Gemini Vision", key="gemini_btn"):
-                with st.spinner("Gemini is analyzing chart candles, price action & predicting next candle..."):
-                    gemini_result = analyze_chart_with_gemini(image, selected, tf)
-                st.markdown(f"""
-                <div class="gemini-box">
-                <h4>🔮 Gemini AI Prediction:</h4>
-                {gemini_result}
-                </div>
-                """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown("### 🧠 Technical Reasons")
-        for r in analysis['reasons']:
-            st.write(r)
-            
-    else:
-        st.error("Not enough data for this timeframe. Try a larger timeframe or wait for market updates.")
-
-st.caption("Technical + Grok + Gemini Vision + Sequence Forecast • Live Candle Prediction")
+        st.markdown("### 📸 Gemini AI Vision Chart Analysis")
+        up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
+        if up_file:
+            img = Image.open(up_file)
+            st.image(img, use_container_width=True)
+            if st.button("Analyze Chart Image"):
+                st.success(analyze_chart_with_gemini(img, sel, tf))
+    

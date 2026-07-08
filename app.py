@@ -19,15 +19,14 @@ else:
     st.error("⚠️ OPENROUTER_API_KEY is missing in Streamlit Secrets! Please add it.")
     st.stop()
 
-# Page Config & Auto-Refresh Header (Har 30 Seconds Mein Auto Update)
+# Page Config
 st.set_page_config(page_title="Quantum AI Signal Engine", layout="wide", initial_sidebar_state="expanded")
-st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
 
 st.markdown("""
 <style>
     .stApp { background-color: #0b0e14; color: #e6edf3; }
-    .main-header { font-size: 2.4rem; font-weight: 800; background: linear-gradient(90deg, #00f2fe, #4facfe);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
+    .main-header { font-size: 2.2rem; font-weight: 800; background: linear-gradient(90deg, #00f2fe, #4facfe);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.2rem; }
     .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; }
     .signal-badge { padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 700; font-size: 0.85rem; display: inline-block; }
     .strong-buy { background-color: #00c853; color: white; }
@@ -38,7 +37,6 @@ st.markdown("""
     .quant-box { background-color: #131924; border: 1px solid #1f6feb; border-radius: 12px; padding: 1.2rem; margin: 1rem 0; }
     .entropy-high { border-left: 5px solid #f44336; }
     .entropy-low { border-left: 5px solid #00c853; }
-    .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -213,8 +211,19 @@ def analyze_chart_with_openrouter_vision(image, symbol, tf):
         return f"OpenRouter Vision AI Error: {str(e)}"
 
 # ==================== STREAMLIT UI ====================
-st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine (OpenRouter Unified)</h1>', unsafe_allow_html=True)
-st.caption(f"Live PKT: {get_pakistan_time()} | Auto Refreshes Every 30s | Powered by OpenRouter")
+
+# Top Header with Manual Refresh Button
+head_col, btn_col = st.columns([3, 1])
+with head_col:
+    st.markdown('<h1 class="main-header">⚡ Quantum AI Signal Engine</h1>', unsafe_allow_html=True)
+    st.caption(f"PKT: {get_pakistan_time()} | Manual Refresh Mode")
+with btn_col:
+    st.write("")
+    if st.button("🔄 Refresh Data Now", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+st.divider()
 
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
@@ -278,12 +287,11 @@ if st.session_state.selected_symbol:
                 st.info(get_openrouter_text_analysis(sel, tf, q_res['signal'], metrics))
             
         st.markdown("---")
-        st.markdown("### 📸 OpenRouter Gemini AI Vision Chart Analysis")
+        st.markdown("### 📸 Gemini AI Vision Chart Analysis")
         up_file = st.file_uploader("Upload Chart Screenshot", type=["png", "jpg", "jpeg"])
         if up_file:
             img = Image.open(up_file)
             st.image(img, use_container_width=True)
-            if st.button("Analyze Chart Image via OpenRouter"):
+            if st.button("Analyze Chart Image via Gemini"):
                 with st.spinner("Analyzing chart image with Gemini 2.0 via OpenRouter..."):
                     st.success(analyze_chart_with_openrouter_vision(img, sel, tf))
-    

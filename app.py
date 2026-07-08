@@ -47,7 +47,7 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y  |  %I:%M:%S %p PKT")
 
-@st.cache_data(ttl=35, show_spinner=False)
+@st.cache_data(ttl=40, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="5d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
@@ -127,10 +127,9 @@ def get_current_candle_status(df):
     return {"last_closed": last_color, "forming_now": forming}
 
 def get_gemini_analysis(symbol, tf, technical_signal, recent_data, images):
-    """Gemini se image + text analysis"""
     prompt = f"""
 You are a professional price action trader.
-Analyze the uploaded chart images carefully (if any) along with the data below.
+Analyze the uploaded chart images (if any) carefully.
 
 Symbol: {symbol}
 Timeframe: {tf}
@@ -138,21 +137,19 @@ Current Price: {recent_data}
 Technical Signal: {technical_signal}
 
 Give your independent analysis:
-1. What do you see in the chart right now? (Key levels, structure, patterns)
+1. What do you see in the chart right now?
 2. Probability that the NEXT candle will be bullish or bearish?
-3. Why do you think the next candle will move in that direction? (Give clear reason)
+3. Why do you think so? (Give clear reason)
 4. Should we take the trade or Wait? Why?
 
 Be honest and critical. Max 6-7 lines.
 """
     try:
         if images:
-            # Convert uploaded images to PIL
             pil_images = [Image.open(img) for img in images]
             response = model.generate_content([prompt] + pil_images)
         else:
             response = model.generate_content(prompt)
-        
         return response.text.strip()
     except Exception as e:
         return f"Gemini analysis failed: {str(e)}"
@@ -166,7 +163,7 @@ if st.button("🔄 Refresh All Data"):
     st.session_state.uploaded_images = []
     st.rerun()
 
-# Grid
+# Grid Layout
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
@@ -241,45 +238,43 @@ if st.session_state.selected_symbol:
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # Gemini Vision Analysis
+        # Gemini Vision Analysis (Button Triggered)
         st.markdown("### 🤖 Gemini Vision Analysis (With Image Reasoning)")
-        with st.spinner("Analyzing chart images with Gemini..."):
-            recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
-            gemini_response = get_gemini_analysis(
-                selected, tf, analysis['signal'], recent, st.session_state.uploaded_images
-            )
         
-        st.markdown(f"""
-        <div class="ai-box">
-        {gemini_response}
-        </div>
-        """, unsafe_allow_html=True)
+        if st.button("🔍 Analyze with Gemini", key="gemini_btn"):
+            with st.spinner("Gemini is analyzing..."):
+                recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
+                gemini_response = get_gemini_analysis(
+                    selected, tf, analysis['signal'], recent, st.session_state.uploaded_images
+                )
+            st.markdown(f"""
+            <div class="ai-box">
+            {gemini_response}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("Click the button above to get Gemini's analysis (with image reasoning if images uploaded).")
         
         # Image Upload Section
-        with st.expander("📎 Upload Chart Screenshots for Gemini (Click to expand)", expanded=False):
+        with st.expander("📎 Upload Chart Screenshots for Gemini", expanded=False):
             uploaded_files = st.file_uploader(
                 "Upload chart images (PNG/JPG)", 
                 type=["png", "jpg", "jpeg"], 
                 accept_multiple_files=True,
-                key="gemini_image_uploader"
+                key="gemini_uploader"
             )
             
             if uploaded_files:
                 st.session_state.uploaded_images = uploaded_files
                 st.success(f"{len(uploaded_files)} image(s) uploaded!")
-                
                 for img in uploaded_files:
                     st.image(img, caption=img.name, use_column_width=True)
-            
-            if st.session_state.uploaded_images:
-                if st.button("🔄 Re-analyze with Images"):
-                    st.rerun()
         
         st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
         
-        st.caption("Upload chart screenshots above so Gemini can analyze visual patterns and give better reasoning.")
+        st.caption("Gemini analysis only runs when you click the button above.")
     else:
         st.error("Not enough data for this timeframe.")
 

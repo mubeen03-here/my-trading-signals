@@ -9,7 +9,7 @@ import google.generativeai as genai
 
 # ==================== GEMINI SETUP ====================
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-pro")
+model = genai.GenerativeModel("gemini-1.5-flash-002")
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 

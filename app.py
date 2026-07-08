@@ -5,13 +5,12 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 import pytz
-from twelvedata import TDClient
+from groq import Groq
+
+# ==================== GROQ CLIENT (Safe Way) ====================
+groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
-
-# ==================== CONFIG ====================
-TWELVE_DATA_API_KEY = "04686c9409744e3d8453e3a371796a3c"   # Tumhari key
-td = TDClient(apikey=TWELVE_DATA_API_KEY)
 
 st.markdown("""
 <style>
@@ -28,6 +27,7 @@ st.markdown("""
     .metric-value { font-size: 1.7rem; font-weight: 700; }
     .trade-box { background-color: #161b22; border: 2px solid #00b8ff; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
+    .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -35,9 +35,9 @@ if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = None
 
 MAIN_SYMBOLS = {
-    "Bitcoin (BTC)": {"ticker": "BTC/USD", "yf_ticker": "BTC-USD", "display": "BTC/USD", "category": "Crypto"},
-    "USD/JPY": {"ticker": "USD/JPY", "yf_ticker": "USDJPY=X", "display": "USD/JPY", "category": "Forex"},
-    "NAS100": {"ticker": "IXIC", "yf_ticker": "NQ=F", "display": "NAS100 (NQ)", "category": "Index"},
+    "Bitcoin (BTC)": {"yf_ticker": "BTC-USD", "display": "BTC/USD"},
+    "USD/JPY": {"yf_ticker": "USDJPY=X", "display": "USD/JPY"},
+    "NAS100": {"yf_ticker": "NQ=F", "display": "NAS100 (NQ)"},
 }
 
 def get_pakistan_time():
@@ -45,8 +45,7 @@ def get_pakistan_time():
     return datetime.now(tz).strftime("%d %b %Y  |  %I:%M:%S %p PKT")
 
 @st.cache_data(ttl=40, show_spinner=False)
-def fetch_ohlcv(symbol_info, interval="15m", period="5d"):
-    ticker = symbol_info.get("yf_ticker", symbol_info["ticker"])
+def fetch_ohlcv(ticker, interval="15m", period="5d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty: return None
@@ -62,101 +61,85 @@ def fetch_ohlcv(symbol_info, interval="15m", period="5d"):
     except:
         return None
 
-def calculate_signal_and_levels(df, tf="15m"):
+def calculate_technical_signal(df):
     if df is None or len(df) < 35: return None
-    
     df = df.copy()
     close = df['Close']
     
-    # Indicators
     df['EMA_9'] = close.ewm(span=9, adjust=False).mean()
     df['EMA_21'] = close.ewm(span=21, adjust=False).mean()
-    df['RSI'] = ta.rsi(close, length=14) if 'ta' in dir() else (100 - (100 / (1 + (close.diff().where(close.diff() > 0, 0).rolling(14).mean() / 
-                           close.diff().where(close.diff() < 0, 0).rolling(14).mean().abs()))))
-    
-    # MACD
+    df['RSI'] = 100 - (100 / (1 + (close.diff().where(close.diff() > 0, 0).rolling(14).mean() / 
+                           close.diff().where(close.diff() < 0, 0).rolling(14).mean().abs())))
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = macd_line - signal_line
+    macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = macd_hist
     
-    # Bollinger
     sma20 = close.rolling(20).mean()
     std20 = close.rolling(20).std()
-    df['BB_Upper'] = sma20 + (std20 * 2)
-    df['BB_Lower'] = sma20 - (std20 * 2)
-    
+    df['BB_Upper'] = sma20 + std20 * 2
+    df['BB_Lower'] = sma20 - std20 * 2
     df['ATR'] = (df['High'] - df['Low']).rolling(14).mean()
+    
     df = df.dropna()
     if len(df) < 15: return None
     
     last = df.iloc[-1]
     price = float(last['Close'])
-    
-    # Scoring
     score = 0
     reasons = []
     
-    # Trend
-    if price > last['EMA_9'] > last['EMA_21']:
-        score += 2; reasons.append("✅ Strong bullish structure")
-    elif price > last['EMA_9']:
-        score += 1; reasons.append("✅ Price above EMA9")
-    elif price < last['EMA_9'] < last['EMA_21']:
-        score -= 2; reasons.append("❌ Bearish structure")
+    if price > last['EMA_9'] > last['EMA_21']: score += 2; reasons.append("✅ Strong bullish structure")
+    elif price > last['EMA_9']: score += 1; reasons.append("✅ Price above EMA9")
+    elif price < last['EMA_9'] < last['EMA_21']: score -= 2; reasons.append("❌ Bearish structure")
     
-    # Momentum
-    rsi_val = float(last['RSI']) if 'RSI' in last else 50
-    if rsi_val > 58: score += 1; reasons.append("✅ RSI bullish")
-    elif rsi_val < 42: score -= 1; reasons.append("❌ RSI bearish")
+    rsi = float(last['RSI'])
+    if rsi > 58: score += 1; reasons.append("✅ RSI bullish")
+    elif rsi < 42: score -= 1; reasons.append("❌ RSI bearish")
     
     if last['MACD_Hist'] > 0: score += 1; reasons.append("✅ MACD positive")
     else: score -= 1; reasons.append("❌ MACD negative")
     
-    # Volatility
     if price <= last['BB_Lower'] * 1.01: score += 1; reasons.append("✅ Near lower band")
     elif price >= last['BB_Upper'] * 0.99: score -= 1; reasons.append("❌ Near upper band")
     
-    # Final Decision
-    if score >= 4:
-        signal = "STRONG BUY"
-        badge = "strong-buy"
-    elif score >= 2:
-        signal = "BUY"
-        badge = "buy"
-    elif score <= -4:
-        signal = "STRONG SELL"
-        badge = "strong-sell"
-    elif score <= -2:
-        signal = "SELL"
-        badge = "sell"
-    else:
-        signal = "WAIT"
-        badge = "neutral"
-    
-    # Next Candle Prediction
-    if signal in ["STRONG BUY", "BUY"]:
-        expected = "Next candle likely bullish (green)"
-        pullback = "Watch for small red pullback then continuation"
-    elif signal in ["STRONG SELL", "SELL"]:
-        expected = "Next candle likely bearish (red)"
-        pullback = "Watch for small green pullback then continuation"
-    else:
-        expected = "Next candle direction unclear"
-        pullback = "Better to wait for clear structure"
+    if score >= 4: signal, badge = "STRONG BUY", "strong-buy"
+    elif score >= 2: signal, badge = "BUY", "buy"
+    elif score <= -4: signal, badge = "STRONG SELL", "strong-sell"
+    elif score <= -2: signal, badge = "SELL", "sell"
+    else: signal, badge = "WAIT", "neutral"
     
     return {
-        "signal": signal,
-        "badge_class": badge,
-        "score": score,
-        "reasons": reasons,
-        "expected_candles": expected,
-        "pullback": pullback,
-        "last_price": round(price, 2),
-        "rsi": round(rsi_val, 1),
-        "atr": round(float(last['ATR']), 2)
+        "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
+        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2)
     }
+
+def get_ai_insight(symbol, tf, technical_signal, recent_data):
+    prompt = f"""
+    You are a professional price action trader.
+    Symbol: {symbol}
+    Timeframe: {tf}
+    Technical Signal: {technical_signal}
+    
+    Recent behavior: {recent_data}
+    
+    Give short honest answer:
+    1. Probability that NEXT candle will be bullish or bearish?
+    2. Should we wait or take trade?
+    3. Any important observation?
+    
+    Max 4-5 lines.
+    """
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=200
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"AI insight not available. ({str(e)})"
 
 def build_chart(df, analysis, symbol_name, tf):
     if df is None or analysis is None: return None
@@ -179,23 +162,22 @@ def build_chart(df, analysis, symbol_name, tf):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Next Candle Focus + Wait Mode")
+st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical Primary + AI Second Opinion")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
     st.rerun()
 
-# Grid
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
     with col:
-        quick_df = fetch_ohlcv(meta, interval="60m", period="2d")
+        quick_df = fetch_ohlcv(meta["yf_ticker"], interval="60m", period="2d")
         price, pct, sig, badge = 0, 0, "NEUTRAL", "neutral"
         if quick_df is not None and len(quick_df) > 1:
             price = float(quick_df['Close'].iloc[-1])
             pct = ((price - float(quick_df['Close'].iloc[0])) / float(quick_df['Close'].iloc[0])) * 100
-            anal = calculate_signal_and_levels(quick_df)
+            anal = calculate_technical_signal(quick_df)
             if anal: 
                 sig = anal["signal"]
                 badge = anal["badge_class"]
@@ -213,7 +195,6 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp_name
             st.rerun()
 
-# Detailed View
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -221,17 +202,16 @@ if st.session_state.selected_symbol:
     st.subheader(f"📊 {selected}")
     
     tf = st.selectbox("Timeframe", ["5m", "15m", "30m", "1h", "4h"], index=2)
-    df = fetch_ohlcv(meta, interval=tf, period="5d" if tf in ["5m","15m"] else "10d")
-    analysis = calculate_signal_and_levels(df, tf)
+    df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="5d")
+    analysis = calculate_technical_signal(df)
     
     if analysis:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Price", analysis['last_price'])
-        c2.metric("Signal", analysis['signal'])
+        c2.metric("Technical Signal", analysis['signal'])
         c3.metric("RSI", analysis['rsi'])
         c4.metric("ATR", analysis['atr'])
         
-        # Chart at bottom
         fig = build_chart(df, analysis, selected, tf)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
@@ -239,23 +219,30 @@ if st.session_state.selected_symbol:
         if analysis['signal'] == "WAIT":
             st.markdown(f"""
             <div class="wait-box">
-            <h3>⏳ WAIT MODE</h3>
-            <p>Market structure is not clear. Better to wait for next candle confirmation.</p>
+            <h3>⏳ WAIT - No Clear Setup</h3>
+            <p>Technical confluence is low. Better to wait for clear structure.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("### 🎯 Trade Setup")
-            st.code(f"Entry: {analysis['last_price']}\nSuggested SL & TP based on ATR & Structure")
+            st.code(f"Entry around: {analysis['last_price']}\nUse ATR for SL & TP")
         
-        st.markdown("### 🕯️ Next Candle Expectation")
-        st.info(analysis['expected_candles'])
-        if analysis.get('pullback'):
-            st.warning(analysis['pullback'])
+        # AI Second Opinion
+        st.markdown("### 🤖 AI Insight (Second Opinion Only)")
+        with st.spinner("Getting AI perspective..."):
+            recent_summary = f"Last 10 candles - RSI: {analysis['rsi']}, Price: {analysis['last_price']}"
+            ai_response = get_ai_insight(selected, tf, analysis['signal'], recent_summary)
         
-        st.markdown("### 🧠 Why this decision?")
+        st.markdown(f"""
+        <div class="ai-box">
+        {ai_response}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
     else:
-        st.error("Not enough data. Try higher timeframe.")
+        st.error("Not enough data for this timeframe.")
 
-st.caption("Professional Next-Candle Focus • Free Tier • Data via yfinance + Twelve Data")
+st.caption("Technical Primary + AI Second Opinion • Free Tier • Data via yfinance")

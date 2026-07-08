@@ -29,7 +29,6 @@ st.markdown("""
     .entropy-high { border-left: 6px solid #f44336; }
     .entropy-low { border-left: 6px solid #00c853; }
     
-    /* Confluence Section Custom Styling */
     .confluence-container { background-color: #0d1117; border: 2px solid #238636; border-radius: 16px; padding: 1.5rem; margin-top: 2rem; }
     .ind-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1rem; text-align: center; }
 </style>
@@ -340,17 +339,8 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    # Updated candidate models list with robust version fallbacks
-    candidate_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest",
-        "gemini-2.0-flash-lite"
-    ]
-    
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
     last_error = ""
-    
     for model_name in candidate_models:
         for api_version in ["v1beta", "v1"]:
             url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={gemini_key}"
@@ -367,45 +357,72 @@ def analyze_chart_vision_native_google(image, symbol, tf):
                 
     return f"❌ Gemini Native API Error: {last_error}"
 
-# ==================== MULTI-AI TEXT ROUTING ====================
+# ==================== DIRECT MULTI-PROVIDER AI ROUTING ====================
 
 def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
-    prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict NEXT immediate candle (Green/Red) with a 1-sentence reason."
+    prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict NEXT immediate candle (Green/Red) with a 1-sentence price action reason."
     
     try:
-        if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
-            candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
-            for model_name in candidate_models:
+        # 1. GOOGLE GEMINI DIRECT API
+        if "Gemini" in provider_name:
+            gemini_key = st.secrets.get("GEMINI_API_KEY")
+            if not gemini_key:
+                return False, "GEMINI_API_KEY Missing in Secrets"
+            for m_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
                 for api_ver in ["v1beta", "v1"]:
-                    url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model_name}:generateContent?key={st.secrets['GEMINI_API_KEY']}"
-                    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                    url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{m_name}:generateContent?key={gemini_key}"
                     try:
-                        res = requests.post(url, json=payload, timeout=8).json()
+                        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8).json()
                         if 'candidates' in res:
                             return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
                     except Exception:
                         continue
-            return False, "Gemini API failed to respond."
-            
-        elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):
-            groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=st.secrets["GROQ_API_KEY"])
-            res = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], timeout=8)
+            return False, "Gemini API failed."
+
+        # 2. GROQ CLOUD DIRECT API
+        elif "Groq" in provider_name or "Llama" in provider_name:
+            groq_key = st.secrets.get("GROQ_API_KEY")
+            if not groq_key:
+                return False, "GROQ_API_KEY Missing in Secrets"
+            client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+            res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], timeout=8)
             return True, res.choices[0].message.content.strip()
-            
-        elif st.secrets.get("OPENROUTER_API_KEY"):
-            or_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=st.secrets["OPENROUTER_API_KEY"])
-            model_map = {
-                "Llama 3.3 (OpenRouter)": "meta-llama/llama-3.3-70b-instruct:free",
-                "DeepSeek R1 (OpenRouter)": "deepseek/deepseek-r1:free",
-                "Qwen 2.5 (OpenRouter)": "qwen/qwen-2.5-72b-instruct:free"
-            }
-            res = or_client.chat.completions.create(model=model_map.get(provider_name, "meta-llama/llama-3.3-70b-instruct:free"), messages=[{"role": "user", "content": prompt}], timeout=10)
+
+        # 3. DEEPSEEK OFFICIAL DIRECT API
+        elif "DeepSeek" in provider_name:
+            ds_key = st.secrets.get("DEEPSEEK_API_KEY")
+            if not ds_key:
+                return False, "DEEPSEEK_API_KEY Missing in Secrets"
+            client = OpenAI(base_url="https://api.deepseek.com", api_key=ds_key)
+            res = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], timeout=10)
             return True, res.choices[0].message.content.strip()
-            
-        else:
-            return False, "API Key Missing in Secrets"
+
+        # 4. MISTRAL AI OFFICIAL DIRECT API
+        elif "Mistral" in provider_name:
+            mistral_key = st.secrets.get("MISTRAL_API_KEY")
+            if not mistral_key:
+                return False, "MISTRAL_API_KEY Missing in Secrets"
+            headers = {"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"}
+            data = {"model": "mistral-small-latest", "messages": [{"role": "user", "content": prompt}]}
+            res = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers, timeout=10).json()
+            if 'choices' in res:
+                return True, res['choices'][0]['message']['content'].strip()
+            return False, f"Mistral Error: {res.get('message', 'Failed')}"
+
+        # 5. HUGGING FACE INFERENCE API
+        elif "HuggingFace" in provider_name or "Qwen" in provider_name:
+            hf_key = st.secrets.get("HF_API_KEY")
+            if not hf_key:
+                return False, "HF_API_KEY Missing in Secrets"
+            headers = {"Authorization": f"Bearer {hf_key}"}
+            hf_url = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct"
+            res = requests.post(hf_url, json={"inputs": prompt}, headers=headers, timeout=10).json()
+            if isinstance(res, list) and len(res) > 0:
+                return True, res[0].get('generated_text', str(res)).strip()
+            return True, str(res).strip()
+
     except Exception as e:
-        return False, f"Server Busy ({str(e)[:35]}...)"
+        return False, f"Provider Error ({str(e)[:35]}...)"
 
 # ==================== STREAMLIT UI ====================
 
@@ -436,79 +453,4 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
         border_style = "border: 2px solid #00f2fe; background-color: #1c2333;" if is_active else ""
         
         card_html = f'<div class="symbol-card" style="{border_style}"><strong>{meta["display"]}</strong><br><span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br><span class="signal-badge {badge}">{q_sig}</span></div>'
-        st.markdown(card_html, unsafe_allow_html=True)
-        if st.button(f"Focus {disp}", key=f"s_{disp}"):
-            st.session_state.selected_symbol = disp
-            st.rerun()
-
-# Deep Dive Focus Section
-sel = st.session_state.selected_symbol
-meta = MAIN_SYMBOLS[sel]
-
-st.divider()
-st.subheader(f"🧠 Quantitative Market Analysis: {sel}")
-
-tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
-df = fetch_ohlcv(meta["yf_ticker"], interval=tf, period="30d")
-
-q_res = calculate_quant_signals(df)
-if q_res:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Live Price", f"{q_res['price']:,}")
-    c2.metric("Quantum Signal", q_res['signal'])
-    c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
-    c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
-    
-    ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
-    noise_msg = '⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop. Trade next candles with extra caution.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Low noise chaos detected. Signal reliability is high.'
-    
-    box_html = f'<div class="quant-box {ent_class}"><h4>🔬 Quant Market Structure Status:</h4><p>Market Noise Entropy: <b>{q_res["entropy"]}</b> | Trend Score: <b>{q_res["score"]}</b><br>{noise_msg}</p></div>'
-    st.markdown(box_html, unsafe_allow_html=True)
-    
-    st.markdown("### 🌀 DTW 6-Candle Sequence Prediction")
-    seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
-    if seq:
-        st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
-        scols = st.columns(len(seq['sequence']))
-        for i, step in enumerate(seq['sequence']):
-            with scols[i]:
-                st.markdown(f"**Candle +{i+1}**\n\n{step}")
-
-    st.divider()
-    
-    st.subheader("🤖 Dedicated AI Next-Candle Predictor Engine")
-    st.caption("Select an AI model below to generate its specific next-candle forecast.")
-    
-    metrics_str = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
-    
-    ai_list = [
-        "Gemini (Direct)",
-        "Groq (Direct)",
-        "Llama 3.3 (OpenRouter)",
-        "DeepSeek R1 (OpenRouter)",
-        "Qwen 2.5 (OpenRouter)"
-    ]
-    
-    ai_cols = st.columns(len(ai_list))
-    for idx, model_name in enumerate(ai_list):
-        with ai_cols[idx]:
-            if st.button(f"Predict via\n{model_name}", key=f"btn_ai_{idx}"):
-                with st.spinner("Analyzing..."):
-                    ok, res = get_ai_next_candle_opinion(model_name, sel, tf, q_res['signal'], metrics_str)
-                    if ok:
-                        st.success(f"**{model_name}**\n\n{res}")
-                    else:
-                        st.error(f"**{model_name}**\n\n{res}")
-
-    st.divider()
-    st.subheader("📸 Gemini Native Vision Chart Analyzer")
-    up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
-    if up_file:
-        img = Image.open(up_file)
-        st.image(img, use_container_width=True)
-        if st.button("Predict Next Candle via Native Gemini"):
-            with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
-                st.info(analyze_chart_vision_native_google(img, sel, tf))
-
-# Independent Confluence Hub at Bottom
-render_confluence_hub_section(df, sel, tf)
+        st.markdown(car

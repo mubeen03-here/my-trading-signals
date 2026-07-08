@@ -340,22 +340,31 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+    # Updated candidate models list with robust version fallbacks
+    candidate_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+        "gemini-2.0-flash-lite"
+    ]
+    
     last_error = ""
     
     for model_name in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=12)
-            res_json = response.json()
-            if response.status_code == 200 and 'candidates' in res_json:
-                text_out = res_json['candidates'][0]['content']['parts'][0]['text']
-                return f"⚡ **Native Gemini Vision Result ({model_name}):**\n\n{text_out}"
-            else:
-                last_error = res_json.get('error', {}).get('message', str(res_json))
-        except Exception as e:
-            last_error = str(e)
-            
+        for api_version in ["v1beta", "v1"]:
+            url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={gemini_key}"
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=12)
+                res_json = response.json()
+                if response.status_code == 200 and 'candidates' in res_json:
+                    text_out = res_json['candidates'][0]['content']['parts'][0]['text']
+                    return f"⚡ **Gemini Vision Result ({model_name}):**\n\n{text_out}"
+                else:
+                    last_error = res_json.get('error', {}).get('message', str(res_json))
+            except Exception as e:
+                last_error = str(e)
+                
     return f"❌ Gemini Native API Error: {last_error}"
 
 # ==================== MULTI-AI TEXT ROUTING ====================
@@ -365,16 +374,17 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
     
     try:
         if provider_name == "Gemini (Direct)" and st.secrets.get("GEMINI_API_KEY"):
-            candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+            candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
             for model_name in candidate_models:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={st.secrets['GEMINI_API_KEY']}"
-                payload = {"contents": [{"parts": [{"text": prompt}]}]}
-                try:
-                    res = requests.post(url, json=payload, timeout=8).json()
-                    if 'candidates' in res:
-                        return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
-                except Exception:
-                    continue
+                for api_ver in ["v1beta", "v1"]:
+                    url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model_name}:generateContent?key={st.secrets['GEMINI_API_KEY']}"
+                    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                    try:
+                        res = requests.post(url, json=payload, timeout=8).json()
+                        if 'candidates' in res:
+                            return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
+                    except Exception:
+                        continue
             return False, "Gemini API failed to respond."
             
         elif provider_name == "Groq (Direct)" and st.secrets.get("GROQ_API_KEY"):

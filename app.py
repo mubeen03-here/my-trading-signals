@@ -9,7 +9,7 @@ import google.generativeai as genai
 
 # ==================== GEMINI SETUP ====================
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-2.0-flash-exp")
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
@@ -129,7 +129,7 @@ def get_current_candle_status(df):
 def get_gemini_analysis(symbol, tf, technical_signal, recent_data, images):
     prompt = f"""
 You are a professional price action trader.
-Analyze the uploaded chart images (if any) carefully.
+Analyze the uploaded chart images carefully (if any).
 
 Symbol: {symbol}
 Timeframe: {tf}
@@ -242,7 +242,7 @@ if st.session_state.selected_symbol:
         st.markdown("### 🤖 Gemini Vision Analysis (With Image Reasoning)")
         
         if st.button("🔍 Analyze with Gemini", key="gemini_btn"):
-            with st.spinner("Gemini is analyzing..."):
+            with st.spinner("Gemini is analyzing the chart..."):
                 recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
                 gemini_response = get_gemini_analysis(
                     selected, tf, analysis['signal'], recent, st.session_state.uploaded_images

@@ -27,6 +27,7 @@ st.markdown("""
     .trade-box { background-color: #161b22; border: 2px solid #00b8ff; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
+    .current-candle-box { background-color: #1f2a3d; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,7 +44,7 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y  |  %I:%M:%S %p PKT")
 
-@st.cache_data(ttl=40, show_spinner=False)
+@st.cache_data(ttl=35, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="5d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
@@ -125,6 +126,26 @@ def calculate_technical_signal(df):
         "expected_candles": expected, "pullback": pullback
     }
 
+def get_current_candle_status(df):
+    """Real-time current forming candle"""
+    if df is None or len(df) < 2: return None
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    last_color = "🟢 Green" if last['Close'] > last['Open'] else "🔴 Red"
+    current_price = float(last['Close'])
+    current_open = float(last['Open'])
+    
+    if current_price > current_open:
+        forming = "🟢 Bullish forming right now"
+    else:
+        forming = "🔴 Bearish forming right now"
+    
+    return {
+        "last_closed": last_color,
+        "forming_now": forming
+    }
+
 def get_ai_insight(symbol, tf, technical_signal, recent_data):
     prompt = f"""
     You are a professional price action trader.
@@ -188,7 +209,7 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp_name
             st.rerun()
 
-# Detailed View (No Chart)
+# Detailed View
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -218,6 +239,17 @@ if st.session_state.selected_symbol:
             st.markdown("### 🎯 Trade Setup")
             st.code(f"Entry around: {analysis['last_price']}\nUse ATR for SL & TP")
         
+        # NEW: Current Forming Candle (Real-time)
+        current_candle = get_current_candle_status(df)
+        if current_candle:
+            st.markdown("### 📍 Current Market Candle (Real-time)")
+            st.markdown(f"""
+            <div class="current-candle-box">
+            <b>Last Closed Candle:</b> {current_candle['last_closed']}<br>
+            <b>Currently Forming:</b> {current_candle['forming_now']}
+            </div>
+            """, unsafe_allow_html=True)
+        
         # Technical Next Candle Expectation
         st.markdown("### 🕯️ Next Candle Expectation (Technical)")
         st.info(analysis['expected_candles'])
@@ -239,6 +271,8 @@ if st.session_state.selected_symbol:
         st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
+        
+        st.caption("⚡ Signals update when new candle closes. Click 'Refresh All Data' to see latest.")
     else:
         st.error("Not enough data for this timeframe.")
 

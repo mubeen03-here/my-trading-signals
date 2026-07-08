@@ -2,12 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 from datetime import datetime
 import pytz
 from groq import Groq
 
-# ==================== GROQ CLIENT (Safe Way) ====================
+# ==================== GROQ CLIENT ====================
 groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
@@ -109,9 +108,21 @@ def calculate_technical_signal(df):
     elif score <= -2: signal, badge = "SELL", "sell"
     else: signal, badge = "WAIT", "neutral"
     
+    # Next Candle Prediction
+    if "BUY" in signal:
+        expected = "Next candle likely bullish (green)"
+        pullback = "Possible small red pullback then continuation"
+    elif "SELL" in signal:
+        expected = "Next candle likely bearish (red)"
+        pullback = "Possible small green pullback then continuation"
+    else:
+        expected = "Next candle direction unclear - better to wait"
+        pullback = ""
+    
     return {
         "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
-        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2)
+        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2),
+        "expected_candles": expected, "pullback": pullback
     }
 
 def get_ai_insight(symbol, tf, technical_signal, recent_data):
@@ -132,33 +143,14 @@ def get_ai_insight(symbol, tf, technical_signal, recent_data):
     """
     try:
         response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
             max_tokens=200
         )
         return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"AI insight not available. ({str(e)})"
-
-def build_chart(df, analysis, symbol_name, tf):
-    if df is None or analysis is None: return None
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df['Datetime'], open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'], name="Price",
-        increasing_line_color="#00c853", decreasing_line_color="#f44336"))
-    
-    last_price = float(df['Close'].iloc[-1])
-    if "BUY" in analysis['signal']:
-        fig.add_annotation(x=df['Datetime'].iloc[-1], y=last_price*0.99, text="▲ LONG", showarrow=True,
-            arrowhead=2, arrowcolor="#00c853", font=dict(color="#00c853", size=14))
-    elif "SELL" in analysis['signal']:
-        fig.add_annotation(x=df['Datetime'].iloc[-1], y=last_price*1.01, text="▼ SHORT", showarrow=True,
-            arrowhead=2, arrowcolor="#f44336", font=dict(color="#f44336", size=14))
-    
-    fig.update_layout(title=f"{symbol_name} — {tf}", template="plotly_dark", height=380,
-        margin=dict(l=10, r=10, t=40, b=10), xaxis_rangeslider_visible=False)
-    return fig
+    except:
+        return "AI insight not available right now."
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
@@ -168,6 +160,7 @@ if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
     st.rerun()
 
+# Grid Layout
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
@@ -195,6 +188,7 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp_name
             st.rerun()
 
+# Detailed View (No Chart)
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -212,10 +206,7 @@ if st.session_state.selected_symbol:
         c3.metric("RSI", analysis['rsi'])
         c4.metric("ATR", analysis['atr'])
         
-        fig = build_chart(df, analysis, selected, tf)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        
+        # Trade Setup
         if analysis['signal'] == "WAIT":
             st.markdown(f"""
             <div class="wait-box">
@@ -226,6 +217,12 @@ if st.session_state.selected_symbol:
         else:
             st.markdown("### 🎯 Trade Setup")
             st.code(f"Entry around: {analysis['last_price']}\nUse ATR for SL & TP")
+        
+        # Technical Next Candle Expectation
+        st.markdown("### 🕯️ Next Candle Expectation (Technical)")
+        st.info(analysis['expected_candles'])
+        if analysis.get('pullback'):
+            st.warning(analysis['pullback'])
         
         # AI Second Opinion
         st.markdown("### 🤖 AI Insight (Second Opinion Only)")

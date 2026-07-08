@@ -24,7 +24,6 @@ st.markdown("""
     .sell { background-color: #f44336; color: white; }
     .strong-sell { background-color: #d32f2f; color: white; }
     .metric-value { font-size: 1.7rem; font-weight: 700; }
-    .trade-box { background-color: #161b22; border: 2px solid #00b8ff; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .wait-box { background-color: #2d2d2d; border: 2px solid #ff9800; border-radius: 12px; padding: 1rem; margin: 0.5rem 0; }
     .ai-box { background-color: #1a1f2e; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin-top: 1rem; }
     .current-candle-box { background-color: #1f2a3d; border: 1px solid #4a90e2; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
@@ -61,8 +60,18 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
     except:
         return None
 
+def get_swing_levels(df, window=10):
+    """Simple swing high/low for Support & Resistance"""
+    if len(df) < window * 2: return None, None
+    highs = df['High'].rolling(window=window, center=True).max()
+    lows = df['Low'].rolling(window=window, center=True).min()
+    
+    recent_resistance = highs.dropna().iloc[-5:].max()
+    recent_support = lows.dropna().iloc[-5:].min()
+    return round(recent_support, 2), round(recent_resistance, 2)
+
 def calculate_technical_signal(df):
-    if df is None or len(df) < 35: return None
+    if df is None or len(df) < 40: return None
     df = df.copy()
     close = df['Close']
     
@@ -75,11 +84,7 @@ def calculate_technical_signal(df):
     macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = macd_hist
     
-    sma20 = close.rolling(20).mean()
-    std20 = close.rolling(20).std()
-    df['BB_Upper'] = sma20 + std20 * 2
-    df['BB_Lower'] = sma20 - std20 * 2
-    df['ATR'] = (df['High'] - df['Low']).rolling(14).mean()
+    support, resistance = get_swing_levels(df)
     
     df = df.dropna()
     if len(df) < 15: return None
@@ -89,8 +94,9 @@ def calculate_technical_signal(df):
     score = 0
     reasons = []
     
-    if price > last['EMA_9'] > last['EMA_21']: score += 2; reasons.append("✅ Strong bullish structure")
-    elif price > last['EMA_9']: score += 1; reasons.append("✅ Price above EMA9")
+    # Basic structure
+    if price > last['EMA_9'] > last['EMA_21']: score += 2; reasons.append("✅ Bullish structure")
+    elif price > last['EMA_9']: score += 1; reasons.append("✅ Above EMA9")
     elif price < last['EMA_9'] < last['EMA_21']: score -= 2; reasons.append("❌ Bearish structure")
     
     rsi = float(last['RSI'])
@@ -100,8 +106,14 @@ def calculate_technical_signal(df):
     if last['MACD_Hist'] > 0: score += 1; reasons.append("✅ MACD positive")
     else: score -= 1; reasons.append("❌ MACD negative")
     
-    if price <= last['BB_Lower'] * 1.01: score += 1; reasons.append("✅ Near lower band")
-    elif price >= last['BB_Upper'] * 0.99: score -= 1; reasons.append("❌ Near upper band")
+    # Key Level Awareness (Important Fix)
+    if support and resistance:
+        if price >= resistance * 0.995 and "BUY" in str(score):
+            score -= 2
+            reasons.append("⚠️ Price near Resistance - Long risky")
+        if price <= support * 1.005 and "SELL" in str(score):
+            score -= 2
+            reasons.append("⚠️ Price near Support - Short risky")
     
     if score >= 4: signal, badge = "STRONG BUY", "strong-buy"
     elif score >= 2: signal, badge = "BUY", "buy"
@@ -109,65 +121,57 @@ def calculate_technical_signal(df):
     elif score <= -2: signal, badge = "SELL", "sell"
     else: signal, badge = "WAIT", "neutral"
     
-    # Next Candle Prediction
+    # Next Candle
     if "BUY" in signal:
-        expected = "Next candle likely bullish (green)"
-        pullback = "Possible small red pullback then continuation"
+        expected = "Next candle likely bullish"
+        pullback = "Watch for small pullback then continuation"
     elif "SELL" in signal:
-        expected = "Next candle likely bearish (red)"
-        pullback = "Possible small green pullback then continuation"
+        expected = "Next candle likely bearish"
+        pullback = "Watch for small pullback then continuation"
     else:
-        expected = "Next candle direction unclear - better to wait"
+        expected = "Next candle unclear - better to wait"
         pullback = ""
     
     return {
         "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
-        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2),
-        "expected_candles": expected, "pullback": pullback
+        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2) if 'ATR' in last else 0,
+        "expected_candles": expected, "pullback": pullback,
+        "support": support, "resistance": resistance
     }
 
 def get_current_candle_status(df):
-    """Real-time current forming candle"""
     if df is None or len(df) < 2: return None
     last = df.iloc[-1]
-    prev = df.iloc[-2]
-    
     last_color = "🟢 Green" if last['Close'] > last['Open'] else "🔴 Red"
-    current_price = float(last['Close'])
-    current_open = float(last['Open'])
-    
-    if current_price > current_open:
-        forming = "🟢 Bullish forming right now"
-    else:
-        forming = "🔴 Bearish forming right now"
-    
-    return {
-        "last_closed": last_color,
-        "forming_now": forming
-    }
+    forming = "🟢 Bullish forming" if last['Close'] > last['Open'] else "🔴 Bearish forming"
+    return {"last_closed": last_color, "forming_now": forming}
 
-def get_ai_insight(symbol, tf, technical_signal, recent_data):
+def get_ai_insight(symbol, tf, technical_signal, recent_data, support, resistance):
     prompt = f"""
-    You are a professional price action trader.
-    Symbol: {symbol}
-    Timeframe: {tf}
-    Technical Signal: {technical_signal}
-    
-    Recent behavior: {recent_data}
-    
-    Give short honest answer:
-    1. Probability that NEXT candle will be bullish or bearish?
-    2. Should we wait or take trade?
-    3. Any important observation?
-    
-    Max 4-5 lines.
-    """
+You are an independent professional price action trader. 
+Do NOT blindly follow or copy the technical signal given below.
+
+Symbol: {symbol}
+Timeframe: {tf}
+Current Price: {recent_data}
+Recent Support: {support}
+Recent Resistance: {resistance}
+Technical Signal: {technical_signal}
+
+Give your own independent analysis:
+1. What is happening right now near key levels (Support/Resistance)?
+2. Probability that the NEXT candle will be bullish or bearish?
+3. Should we take the trade or Wait? Give reason.
+4. Any important observation?
+
+Be honest and critical. Max 5-6 lines.
+"""
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=200
+            temperature=0.5,
+            max_tokens=220
         )
         return response.choices[0].message.content.strip()
     except:
@@ -175,13 +179,12 @@ def get_ai_insight(symbol, tf, technical_signal, recent_data):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical Primary + AI Second Opinion")
+st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Independent AI Analysis")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
     st.rerun()
 
-# Grid Layout
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
@@ -209,7 +212,6 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_symbol = disp_name
             st.rerun()
 
-# Detailed View
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -227,40 +229,39 @@ if st.session_state.selected_symbol:
         c3.metric("RSI", analysis['rsi'])
         c4.metric("ATR", analysis['atr'])
         
-        # Trade Setup
         if analysis['signal'] == "WAIT":
             st.markdown(f"""
             <div class="wait-box">
             <h3>⏳ WAIT - No Clear Setup</h3>
-            <p>Technical confluence is low. Better to wait for clear structure.</p>
+            <p>Technical confluence is low or price is near key level. Better to wait.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("### 🎯 Trade Setup")
             st.code(f"Entry around: {analysis['last_price']}\nUse ATR for SL & TP")
         
-        # NEW: Current Forming Candle (Real-time)
-        current_candle = get_current_candle_status(df)
-        if current_candle:
+        # Current Candle
+        current = get_current_candle_status(df)
+        if current:
             st.markdown("### 📍 Current Market Candle (Real-time)")
             st.markdown(f"""
             <div class="current-candle-box">
-            <b>Last Closed Candle:</b> {current_candle['last_closed']}<br>
-            <b>Currently Forming:</b> {current_candle['forming_now']}
+            <b>Last Closed:</b> {current['last_closed']}<br>
+            <b>Currently Forming:</b> {current['forming_now']}
             </div>
             """, unsafe_allow_html=True)
         
-        # Technical Next Candle Expectation
+        # Technical Next Candle
         st.markdown("### 🕯️ Next Candle Expectation (Technical)")
         st.info(analysis['expected_candles'])
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # AI Second Opinion
-        st.markdown("### 🤖 AI Insight (Second Opinion Only)")
-        with st.spinner("Getting AI perspective..."):
-            recent_summary = f"Last 10 candles - RSI: {analysis['rsi']}, Price: {analysis['last_price']}"
-            ai_response = get_ai_insight(selected, tf, analysis['signal'], recent_summary)
+        # AI Independent Insight
+        st.markdown("### 🤖 AI Independent Insight (Grok)")
+        with st.spinner("Getting independent AI view..."):
+            recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
+            ai_response = get_ai_insight(selected, tf, analysis['signal'], recent, analysis.get('support'), analysis.get('resistance'))
         
         st.markdown(f"""
         <div class="ai-box">
@@ -272,8 +273,8 @@ if st.session_state.selected_symbol:
         for r in analysis['reasons']:
             st.write(r)
         
-        st.caption("⚡ Signals update when new candle closes. Click 'Refresh All Data' to see latest.")
+        st.caption("Signals update on new candle close. Click Refresh for latest.")
     else:
         st.error("Not enough data for this timeframe.")
 
-st.caption("Technical Primary + AI Second Opinion • Free Tier • Data via yfinance")
+st.caption("Technical Independent + Grok Independent Analysis • Free Tier")

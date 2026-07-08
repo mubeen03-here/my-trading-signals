@@ -48,9 +48,19 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-@st.cache_data(ttl=20, show_spinner=False)
-def fetch_ohlcv(ticker, interval="15m", period="30d"):
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_ohlcv(ticker, interval="15m"):
     try:
+        # Dynamic period selection according to yfinance API rules
+        if interval == "5m":
+            period = "5d"
+        elif interval == "15m":
+            period = "14d"
+        elif interval == "1h":
+            period = "60d"
+        else: # 4h or 1d
+            period = "120d"
+            
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty:
             return None
@@ -66,6 +76,10 @@ def fetch_ohlcv(ticker, interval="15m", period="30d"):
             elif col.lower() in ["close", "open", "high", "low"]:
                 rename_map[col] = col.capitalize()
         df = df.rename(columns=rename_map)
+        
+        if not {"Datetime", "Open", "High", "Low", "Close"}.issubset(df.columns):
+            return None
+            
         return df[["Datetime", "Open", "High", "Low", "Close"]].dropna()
     except Exception:
         return None
@@ -103,14 +117,14 @@ def monte_carlo_simulation(last_price, returns_std, num_sims=300, steps=5):
     return round(float((bullish_paths / num_sims) * 100), 1)
 
 def calculate_quant_signals(df):
-    if df is None or len(df) < 50:
+    if df is None or len(df) < 30:
         return None
     df = df.copy()
     close = df['Close'].astype(float).values
     
-    entropy_score = calculate_shannon_entropy(close[-40:])
-    log_returns = np.diff(np.log(close[-50:]))
-    volatility = np.std(log_returns)
+    entropy_score = calculate_shannon_entropy(close[-30:])
+    log_returns = np.diff(np.log(close[-30:]))
+    volatility = np.std(log_returns) if len(log_returns) > 0 else 0.01
     monte_carlo_bull_prob = monte_carlo_simulation(close[-1], volatility, num_sims=300, steps=5)
     
     df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
@@ -152,7 +166,7 @@ def calculate_quant_signals(df):
     }
 
 def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
-    if df is None or len(df) < 200:
+    if df is None or len(df) < 100:
         return None
     close = df['Close'].astype(float).values
     open_p = df['Open'].astype(float).values
@@ -161,8 +175,10 @@ def dtw_sequence_predictor(df, pattern_len=8, predict_len=6):
     curr_norm = (curr - np.mean(curr)) / (np.std(curr) + 1e-8)
     
     matches = []
-    search_range = min(700, len(df) - pattern_len - predict_len - 5)
-    
+    search_range = min(400, len(df) - pattern_len - predict_len - 5)
+    if search_range < 10:
+        return None
+        
     for idx in range(len(df) - search_range - pattern_len - predict_len, len(df) - pattern_len - predict_len):
         hist = (close[idx:idx+pattern_len] - open_p[idx:idx+pattern_len])
         hist_norm = (hist - np.mean(hist)) / (np.std(hist) + 1e-8)
@@ -362,7 +378,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
     prompt = f"Asset: {symbol}, TF: {tf}, Signal: {signal}, Metrics: {metrics}. Predict NEXT immediate candle (Green/Red) with a 1-sentence price action reason."
     
     try:
-        # 1. GOOGLE GEMINI DIRECT API
         if "Gemini" in provider_name:
             gemini_key = st.secrets.get("GEMINI_API_KEY")
             if not gemini_key:
@@ -377,7 +392,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
                     continue
             return False, "Gemini API failed."
 
-        # 2. GROQ CLOUD DIRECT API
         elif "Groq" in provider_name or "Llama" in provider_name:
             groq_key = st.secrets.get("GROQ_API_KEY")
             if not groq_key:
@@ -386,7 +400,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
             res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], timeout=8)
             return True, res.choices[0].message.content.strip()
 
-        # 3. DEEPSEEK OFFICIAL DIRECT API
         elif "DeepSeek" in provider_name:
             ds_key = st.secrets.get("DEEPSEEK_API_KEY")
             if not ds_key:
@@ -395,7 +408,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
             res = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], timeout=10)
             return True, res.choices[0].message.content.strip()
 
-        # 4. MISTRAL AI OFFICIAL DIRECT API
         elif "Mistral" in provider_name:
             mistral_key = st.secrets.get("MISTRAL_API_KEY")
             if not mistral_key:
@@ -407,7 +419,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
                 return True, res['choices'][0]['message']['content'].strip()
             return False, f"Mistral Error: {res.get('message', 'Failed')}"
 
-        # 5. HUGGING FACE INFERENCE API
         elif "HuggingFace" in provider_name or "Qwen" in provider_name:
             hf_key = st.secrets.get("HF_API_KEY")
             if not hf_key:
@@ -440,7 +451,7 @@ st.divider()
 cols = st.columns(3)
 for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
     with cols[idx % 3]:
-        q_df = fetch_ohlcv(meta["yf_ticker"], interval="60m", period="5d")
+        q_df = fetch_ohlcv(meta["yf_ticker"], interval="15m")
         p, q_sig, badge = 0.0, "WAIT", "neutral"
         if q_df is not None:
             anal = calculate_quant_signals(q_df)
@@ -450,10 +461,4 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
         is_active = (st.session_state.selected_symbol == disp)
         border_style = "border: 2px solid #00f2fe; background-color: #1c2333;" if is_active else ""
         
-        card_html = f'<div class="symbol-card" style="{border_style}"><strong>{meta["display"]}</strong><br><span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br><span class="signal-badge {badge}">{q_sig}</span></div>'
-        st.markdown(card_html, unsafe_allow_html=True)
-        if st.button(f"Focus {disp}", key=f"s_{disp}"):
-            st.session_state.selected_symbol = disp
-            st.rerun()
-
-# Deep Dive Focus Section
+        card_html = f'<div class="symbol-card" style="{border_style}"><strong>{meta["display"]}</strong><br><span style="font-size:1.4rem; font-weight:700;

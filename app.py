@@ -4,10 +4,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pytz
-from groq import Groq
+from PIL import Image
+import google.generativeai as genai
 
-# ==================== GROQ CLIENT ====================
-groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+# ==================== GEMINI SETUP ====================
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
@@ -32,6 +34,8 @@ st.markdown("""
 
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = None
+if "uploaded_images" not in st.session_state:
+    st.session_state.uploaded_images = []
 
 MAIN_SYMBOLS = {
     "Bitcoin (BTC)": {"yf_ticker": "BTC-USD", "display": "BTC/USD"},
@@ -60,16 +64,6 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
     except:
         return None
 
-def get_swing_levels(df, window=10):
-    """Simple swing high/low for Support & Resistance"""
-    if len(df) < window * 2: return None, None
-    highs = df['High'].rolling(window=window, center=True).max()
-    lows = df['Low'].rolling(window=window, center=True).min()
-    
-    recent_resistance = highs.dropna().iloc[-5:].max()
-    recent_support = lows.dropna().iloc[-5:].min()
-    return round(recent_support, 2), round(recent_resistance, 2)
-
 def calculate_technical_signal(df):
     if df is None or len(df) < 40: return None
     df = df.copy()
@@ -84,8 +78,6 @@ def calculate_technical_signal(df):
     macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = macd_hist
     
-    support, resistance = get_swing_levels(df)
-    
     df = df.dropna()
     if len(df) < 15: return None
     
@@ -94,7 +86,6 @@ def calculate_technical_signal(df):
     score = 0
     reasons = []
     
-    # Basic structure
     if price > last['EMA_9'] > last['EMA_21']: score += 2; reasons.append("✅ Bullish structure")
     elif price > last['EMA_9']: score += 1; reasons.append("✅ Above EMA9")
     elif price < last['EMA_9'] < last['EMA_21']: score -= 2; reasons.append("❌ Bearish structure")
@@ -106,37 +97,26 @@ def calculate_technical_signal(df):
     if last['MACD_Hist'] > 0: score += 1; reasons.append("✅ MACD positive")
     else: score -= 1; reasons.append("❌ MACD negative")
     
-    # Key Level Awareness (Important Fix)
-    if support and resistance:
-        if price >= resistance * 0.995 and "BUY" in str(score):
-            score -= 2
-            reasons.append("⚠️ Price near Resistance - Long risky")
-        if price <= support * 1.005 and "SELL" in str(score):
-            score -= 2
-            reasons.append("⚠️ Price near Support - Short risky")
-    
     if score >= 4: signal, badge = "STRONG BUY", "strong-buy"
     elif score >= 2: signal, badge = "BUY", "buy"
     elif score <= -4: signal, badge = "STRONG SELL", "strong-sell"
     elif score <= -2: signal, badge = "SELL", "sell"
     else: signal, badge = "WAIT", "neutral"
     
-    # Next Candle
     if "BUY" in signal:
-        expected = "Next candle likely bullish"
-        pullback = "Watch for small pullback then continuation"
+        expected = "Next candle likely bullish (green)"
+        pullback = "Possible small red pullback then continuation"
     elif "SELL" in signal:
-        expected = "Next candle likely bearish"
-        pullback = "Watch for small pullback then continuation"
+        expected = "Next candle likely bearish (red)"
+        pullback = "Possible small green pullback then continuation"
     else:
-        expected = "Next candle unclear - better to wait"
+        expected = "Next candle direction unclear - better to wait"
         pullback = ""
     
     return {
         "signal": signal, "badge_class": badge, "score": score, "reasons": reasons,
-        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": round(float(last['ATR']), 2) if 'ATR' in last else 0,
-        "expected_candles": expected, "pullback": pullback,
-        "support": support, "resistance": resistance
+        "last_price": round(price, 2), "rsi": round(rsi, 1), "atr": 0,
+        "expected_candles": expected, "pullback": pullback
     }
 
 def get_current_candle_status(df):
@@ -146,45 +126,47 @@ def get_current_candle_status(df):
     forming = "🟢 Bullish forming" if last['Close'] > last['Open'] else "🔴 Bearish forming"
     return {"last_closed": last_color, "forming_now": forming}
 
-def get_ai_insight(symbol, tf, technical_signal, recent_data, support, resistance):
+def get_gemini_analysis(symbol, tf, technical_signal, recent_data, images):
+    """Gemini se image + text analysis"""
     prompt = f"""
-You are an independent professional price action trader. 
-Do NOT blindly follow or copy the technical signal given below.
+You are a professional price action trader.
+Analyze the uploaded chart images carefully (if any) along with the data below.
 
 Symbol: {symbol}
 Timeframe: {tf}
 Current Price: {recent_data}
-Recent Support: {support}
-Recent Resistance: {resistance}
 Technical Signal: {technical_signal}
 
-Give your own independent analysis:
-1. What is happening right now near key levels (Support/Resistance)?
+Give your independent analysis:
+1. What do you see in the chart right now? (Key levels, structure, patterns)
 2. Probability that the NEXT candle will be bullish or bearish?
-3. Should we take the trade or Wait? Give reason.
-4. Any important observation?
+3. Why do you think the next candle will move in that direction? (Give clear reason)
+4. Should we take the trade or Wait? Why?
 
-Be honest and critical. Max 5-6 lines.
+Be honest and critical. Max 6-7 lines.
 """
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-            max_tokens=220
-        )
-        return response.choices[0].message.content.strip()
-    except:
-        return "AI insight not available right now."
+        if images:
+            # Convert uploaded images to PIL
+            pil_images = [Image.open(img) for img in images]
+            response = model.generate_content([prompt] + pil_images)
+        else:
+            response = model.generate_content(prompt)
+        
+        return response.text.strip()
+    except Exception as e:
+        return f"Gemini analysis failed: {str(e)}"
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Independent AI Analysis")
+st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Gemini Vision Analysis")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
+    st.session_state.uploaded_images = []
     st.rerun()
 
+# Grid
 cols = st.columns(3)
 for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
     col = cols[idx % 3]
@@ -210,8 +192,10 @@ for idx, (disp_name, meta) in enumerate(MAIN_SYMBOLS.items()):
         
         if st.button(f"View Analysis", key=f"btn_{disp_name}"):
             st.session_state.selected_symbol = disp_name
+            st.session_state.uploaded_images = []
             st.rerun()
 
+# Detailed View
 if st.session_state.selected_symbol:
     selected = st.session_state.selected_symbol
     meta = MAIN_SYMBOLS[selected]
@@ -233,7 +217,7 @@ if st.session_state.selected_symbol:
             st.markdown(f"""
             <div class="wait-box">
             <h3>⏳ WAIT - No Clear Setup</h3>
-            <p>Technical confluence is low or price is near key level. Better to wait.</p>
+            <p>Technical confluence is low. Better to wait for clear structure.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -257,24 +241,46 @@ if st.session_state.selected_symbol:
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # AI Independent Insight
-        st.markdown("### 🤖 AI Independent Insight (Grok)")
-        with st.spinner("Getting independent AI view..."):
+        # Gemini Vision Analysis
+        st.markdown("### 🤖 Gemini Vision Analysis (With Image Reasoning)")
+        with st.spinner("Analyzing chart images with Gemini..."):
             recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
-            ai_response = get_ai_insight(selected, tf, analysis['signal'], recent, analysis.get('support'), analysis.get('resistance'))
+            gemini_response = get_gemini_analysis(
+                selected, tf, analysis['signal'], recent, st.session_state.uploaded_images
+            )
         
         st.markdown(f"""
         <div class="ai-box">
-        {ai_response}
+        {gemini_response}
         </div>
         """, unsafe_allow_html=True)
+        
+        # Image Upload Section
+        with st.expander("📎 Upload Chart Screenshots for Gemini (Click to expand)", expanded=False):
+            uploaded_files = st.file_uploader(
+                "Upload chart images (PNG/JPG)", 
+                type=["png", "jpg", "jpeg"], 
+                accept_multiple_files=True,
+                key="gemini_image_uploader"
+            )
+            
+            if uploaded_files:
+                st.session_state.uploaded_images = uploaded_files
+                st.success(f"{len(uploaded_files)} image(s) uploaded!")
+                
+                for img in uploaded_files:
+                    st.image(img, caption=img.name, use_column_width=True)
+            
+            if st.session_state.uploaded_images:
+                if st.button("🔄 Re-analyze with Images"):
+                    st.rerun()
         
         st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
         
-        st.caption("Signals update on new candle close. Click Refresh for latest.")
+        st.caption("Upload chart screenshots above so Gemini can analyze visual patterns and give better reasoning.")
     else:
         st.error("Not enough data for this timeframe.")
 
-st.caption("Technical Independent + Grok Independent Analysis • Free Tier")
+st.caption("Technical + Gemini Vision Analysis • Free Tier")

@@ -4,12 +4,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pytz
-from PIL import Image
-import google.generativeai as genai
+from groq import Groq
 
-# ==================== GEMINI SETUP ====================
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+# ==================== GROQ SETUP ====================
+groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 st.set_page_config(page_title="Pro Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
@@ -126,7 +124,7 @@ def get_current_candle_status(df):
     forming = "🟢 Bullish forming" if last['Close'] > last['Open'] else "🔴 Bearish forming"
     return {"last_closed": last_color, "forming_now": forming}
 
-def get_gemini_analysis(symbol, tf, technical_signal, recent_data):
+def get_grok_analysis(symbol, tf, technical_signal, recent_data):
     prompt = f"""
 You are a professional price action trader.
 
@@ -136,7 +134,7 @@ Current Price: {recent_data}
 Technical Signal: {technical_signal}
 
 Give your independent analysis:
-1. What is happening right now in the market?
+1. What is happening right now?
 2. Probability that the NEXT candle will be bullish or bearish?
 3. Why do you think so? (Give clear reason)
 4. Should we take the trade or Wait? Why?
@@ -144,14 +142,19 @@ Give your independent analysis:
 Be honest and critical. Max 6-7 lines.
 """
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=220
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Gemini analysis failed: {str(e)}"
+        return f"Analysis failed: {str(e)}"
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">📈 Pro Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Gemini Analysis")
+st.caption(f"Pakistan Time: {get_pakistan_time()}  |  Technical + Grok Analysis")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
@@ -233,42 +236,42 @@ if st.session_state.selected_symbol:
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # Gemini Analysis (Text Only - Button Triggered)
-        st.markdown("### 🤖 Gemini Analysis (Independent View)")
+        # Grok Analysis (Button Triggered)
+        st.markdown("### 🤖 Grok Independent Analysis")
         
-        if st.button("🔍 Analyze with Gemini", key="gemini_btn"):
-            with st.spinner("Getting Gemini's analysis..."):
+        if st.button("🔍 Analyze with Grok", key="grok_btn"):
+            with st.spinner("Getting Grok's analysis..."):
                 recent = f"Price: {analysis['last_price']}, RSI: {analysis['rsi']}"
-                gemini_response = get_gemini_analysis(
+                grok_response = get_grok_analysis(
                     selected, tf, analysis['signal'], recent
                 )
             st.markdown(f"""
             <div class="ai-box">
-            {gemini_response}
+            {grok_response}
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.info("Click the button above to get Gemini's independent analysis and reasoning.")
+            st.info("Click the button above to get Grok's independent analysis and reasoning.")
         
-        # Image Upload Section (for future use)
+        # Image Upload Section (Future)
         with st.expander("📎 Upload Chart Screenshots (Coming Soon)", expanded=False):
-            st.info("Image analysis feature is temporarily disabled due to API issues. It will be enabled soon.")
+            st.info("Image analysis feature is temporarily disabled due to API issues.")
             uploaded_files = st.file_uploader(
                 "Upload chart images (PNG/JPG)", 
                 type=["png", "jpg", "jpeg"], 
                 accept_multiple_files=True,
-                key="gemini_uploader"
+                key="image_uploader"
             )
             if uploaded_files:
                 st.session_state.uploaded_images = uploaded_files
-                st.success(f"{len(uploaded_files)} image(s) uploaded! (Will be used when image analysis is enabled)")
+                st.success(f"{len(uploaded_files)} image(s) uploaded!")
         
         st.markdown("### 🧠 Technical Reasons")
         for r in analysis['reasons']:
             st.write(r)
         
-        st.caption("Gemini analysis runs only when you click the button above.")
+        st.caption("Grok analysis runs only when you click the button above.")
     else:
         st.error("Not enough data for this timeframe.")
 
-st.caption("Technical + Gemini Analysis • Free Tier • Image analysis coming soon")
+st.caption("Technical + Grok Analysis • Free Tier • Gemini Image Analysis Coming Soon")

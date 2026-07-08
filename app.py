@@ -339,21 +339,20 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     last_error = ""
     for model_name in candidate_models:
-        for api_version in ["v1beta", "v1"]:
-            url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={gemini_key}"
-            try:
-                response = requests.post(url, json=payload, headers=headers, timeout=12)
-                res_json = response.json()
-                if response.status_code == 200 and 'candidates' in res_json:
-                    text_out = res_json['candidates'][0]['content']['parts'][0]['text']
-                    return f"⚡ **Gemini Vision Result ({model_name}):**\n\n{text_out}"
-                else:
-                    last_error = res_json.get('error', {}).get('message', str(res_json))
-            except Exception as e:
-                last_error = str(e)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=12)
+            res_json = response.json()
+            if response.status_code == 200 and 'candidates' in res_json:
+                text_out = res_json['candidates'][0]['content']['parts'][0]['text']
+                return f"⚡ **Gemini Vision Result ({model_name}):**\n\n{text_out}"
+            else:
+                last_error = res_json.get('error', {}).get('message', str(res_json))
+        except Exception as e:
+            last_error = str(e)
                 
     return f"❌ Gemini Native API Error: {last_error}"
 
@@ -368,15 +367,14 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
             gemini_key = st.secrets.get("GEMINI_API_KEY")
             if not gemini_key:
                 return False, "GEMINI_API_KEY Missing in Secrets"
-            for m_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
-                for api_ver in ["v1beta", "v1"]:
-                    url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{m_name}:generateContent?key={gemini_key}"
-                    try:
-                        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8).json()
-                        if 'candidates' in res:
-                            return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
-                    except Exception:
-                        continue
+            for m_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={gemini_key}"
+                try:
+                    res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8).json()
+                    if 'candidates' in res:
+                        return True, res['candidates'][0]['content']['parts'][0]['text'].strip()
+                except Exception:
+                    continue
             return False, "Gemini API failed."
 
         # 2. GROQ CLOUD DIRECT API
@@ -453,4 +451,9 @@ for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
         border_style = "border: 2px solid #00f2fe; background-color: #1c2333;" if is_active else ""
         
         card_html = f'<div class="symbol-card" style="{border_style}"><strong>{meta["display"]}</strong><br><span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br><span class="signal-badge {badge}">{q_sig}</span></div>'
-        st.markdown(car
+        st.markdown(card_html, unsafe_allow_html=True)
+        if st.button(f"Focus {disp}", key=f"s_{disp}"):
+            st.session_state.selected_symbol = disp
+            st.rerun()
+
+# Deep Dive Focus Section

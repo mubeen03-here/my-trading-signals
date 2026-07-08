@@ -236,7 +236,7 @@ if st.session_state.selected_symbol:
         if analysis.get('pullback'):
             st.warning(analysis['pullback'])
         
-        # Grok Analysis (Button Triggered)
+        # Grok Analysis
         st.markdown("### 🤖 Grok Independent Analysis")
         
         if st.button("🔍 Analyze with Grok", key="grok_btn"):
@@ -253,7 +253,7 @@ if st.session_state.selected_symbol:
         else:
             st.info("Click the button above to get Grok's independent analysis and reasoning.")
         
-        # Image Upload Section (Future)
+        # Image Upload (Future)
         with st.expander("📎 Upload Chart Screenshots (Coming Soon)", expanded=False):
             st.info("Image analysis feature is temporarily disabled due to API issues.")
             uploaded_files = st.file_uploader(

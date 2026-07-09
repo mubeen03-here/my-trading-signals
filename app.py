@@ -363,7 +363,6 @@ def analyze_chart_vision_native_google(image, symbol, tf):
         }]
     }
     
-    # Active Gemini Models
     candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-002"]
     last_error = ""
     for model_name in candidate_models:
@@ -419,7 +418,7 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
                 return True, res.choices[0].message.content.strip()
             except Exception as ds_err:
                 if "402" in str(ds_err) or "Insufficient Balance" in str(ds_err):
-                    return False, "💳 DeepSeek Balance Empty! Please top up credits at platform.deepseek.com"
+                    return False, "💳 DeepSeek Balance Empty! Top up at platform.deepseek.com"
                 return False, f"DeepSeek Error: {str(ds_err)[:50]}"
 
         elif "Mistral" in provider_name:
@@ -439,7 +438,6 @@ def get_ai_next_candle_opinion(provider_name, symbol, tf, signal, metrics):
                 return False, "HF_API_KEY Missing in Secrets"
             headers = {"Authorization": f"Bearer {hf_key}", "Content-Type": "application/json"}
             
-            # Using HuggingFace Router API Endpoint
             hf_url = "https://router.huggingface.co/hf-inference/v1/chat/completions"
             payload = {
                 "model": "Qwen/Qwen2.5-72B-Instruct",
@@ -464,4 +462,115 @@ with head_col:
     st.caption(f"PKT: {get_pakistan_time()} | Active Focus: {st.session_state.selected_symbol}")
 with btn_col:
     st.write("")
-    if st.button("🔄 Refres
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+st.divider()
+
+# Pair Selection Top Cards
+cols = st.columns(3)
+for idx, (disp, meta) in enumerate(MAIN_SYMBOLS.items()):
+    with cols[idx % 3]:
+        q_df = fetch_ohlcv(meta["yf_ticker"], interval="15m")
+        p, q_sig, badge = 0.0, "WAIT", "neutral"
+        if q_df is not None:
+            anal = calculate_quant_signals(q_df)
+            if anal:
+                p, q_sig, badge = anal["price"], anal["signal"], anal["badge_class"]
+        
+        is_active = (st.session_state.selected_symbol == disp)
+        border_style = "border: 2px solid #00f2fe; background-color: #1c2333;" if is_active else ""
+        disp_title = meta["display"]
+        
+        card_html = (
+            f'<div class="symbol-card" style="{border_style}">'
+            f'<strong>{disp_title}</strong><br>'
+            f'<span style="font-size:1.4rem; font-weight:700;">{p:,.2f}</span><br>'
+            f'<span class="signal-badge {badge}">{q_sig}</span>'
+            f'</div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
+        if st.button(f"Focus {disp}", key=f"s_{disp}"):
+            st.session_state.selected_symbol = disp
+            st.rerun()
+
+# Deep Dive Focus Section
+sel = st.session_state.selected_symbol
+meta = MAIN_SYMBOLS[sel]
+
+st.divider()
+st.subheader(f"🧠 Quantitative Market Analysis: {sel}")
+
+tf = st.selectbox("Select Timeframe", ["5m", "15m", "1h", "4h"], index=1)
+df = fetch_ohlcv(meta["yf_ticker"], interval=tf)
+
+if df is None:
+    st.error(f"⚠️ **Market Data Error:** Yahoo Finance se `{sel}` ({tf}) ka live data fetch nahi ho saka. Refresh dabaayein.")
+else:
+    q_res = calculate_quant_signals(df)
+    if q_res:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Live Price", f"{q_res['price']:,}")
+        c2.metric("Quantum Signal", q_res['signal'])
+        c3.metric("Shannon Noise Entropy", f"{q_res['entropy']} / 1.0")
+        c4.metric("Monte Carlo Bull Prob.", f"{q_res['mc_bull_prob']}%")
+        
+        ent_class = "entropy-high" if q_res['is_noisy'] else "entropy-low"
+        noise_msg = '⚠️ <b>HIGH NOISE DETECTED:</b> Market is in range/chop.' if q_res['is_noisy'] else '✅ <b>CLEAN MARKET STRUCTURE:</b> Signal reliability is high.'
+        
+        box_html = (
+            f'<div class="quant-box {ent_class}">'
+            f'<h4>🔬 Quant Market Structure Status:</h4>'
+            f'<p>Market Noise Entropy: <b>{q_res["entropy"]}</b> | Trend Score: <b>{q_res["score"]}</b><br>{noise_msg}</p>'
+            f'</div>'
+        )
+        st.markdown(box_html, unsafe_allow_html=True)
+        
+        st.markdown("### 🌀 DTW 6-Candle Sequence Prediction")
+        seq = dtw_sequence_predictor(df, pattern_len=8, predict_len=6)
+        if seq:
+            st.write(f"Historical Match Quality: **{seq['match_quality']}%**")
+            scols = st.columns(len(seq['sequence']))
+            for i, step in enumerate(seq['sequence']):
+                with scols[i]:
+                    st.markdown(f"**Candle +{i+1}**\n\n{step}")
+
+        st.divider()
+        
+        st.subheader("🤖 Official Direct Multi-AI Engine")
+        st.caption("Direct APIs via Official Google, Groq, DeepSeek, Mistral & HuggingFace.")
+        
+        metrics_str = f"Entropy: {q_res['entropy']}, MC Bull Prob: {q_res['mc_bull_prob']}%"
+        
+        ai_list = [
+            "Gemini 2.5 Flash",
+            "Llama 3.3 (Groq)",
+            "DeepSeek Official",
+            "Mistral Official",
+            "Qwen 2.5 (HuggingFace)"
+        ]
+        
+        ai_cols = st.columns(len(ai_list))
+        for idx, model_name in enumerate(ai_list):
+            with ai_cols[idx]:
+                if st.button(f"Predict via\n{model_name}", key=f"btn_ai_{idx}"):
+                    with st.spinner("Analyzing..."):
+                        ok, res = get_ai_next_candle_opinion(model_name, sel, tf, q_res['signal'], metrics_str)
+                        if ok:
+                            st.success(f"**{model_name}**\n\n{res}")
+                        else:
+                            st.error(f"**{model_name}**\n\n{res}")
+
+        st.divider()
+        st.subheader("📸 Gemini Native Vision Chart Analyzer")
+        up_file = st.file_uploader("Upload Chart Screenshot for Instant Next Candle Prediction", type=["png", "jpg", "jpeg"])
+        if up_file:
+            img = Image.open(up_file)
+            st.image(img, use_container_width=True)
+            if st.button("Predict Next Candle via Native Gemini"):
+                with st.spinner("Analyzing chart directly via Official Google Gemini API..."):
+                    st.info(analyze_chart_vision_native_google(img, sel, tf))
+
+    # Independent Confluence Hub
+    render_confluence_hub_section(df, sel, tf)
